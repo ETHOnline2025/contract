@@ -3,26 +3,24 @@
 
 pragma solidity ^0.8.0;
 /**
-
-
-  /$$$$$$  /$$             /$$      /$$                  
- /$$__  $$| $$            | $$     |__/                  
-| $$  \__/$$$$$$   /$$$$$$| $$   /$$/$$/$$$$$$$  /$$$$$$ 
-|  $$$$$|_  $$_/  |____  $| $$  /$$| $| $$__  $$/$$__  $$
- \____  $$| $$     /$$$$$$| $$$$$$/| $| $$  \ $| $$  \ $$
- /$$  \ $$| $$ /$$/$$__  $| $$_  $$| $| $$  | $| $$  | $$
-|  $$$$$$/|  $$$$|  $$$$$$| $$ \  $| $| $$  | $|  $$$$$$$
- \______/  \___/  \_______|__/  \__|__|__/  |__/\____  $$
-                                                /$$  \ $$
-                                               |  $$$$$$/
-                                                \______/                                                                                       
-
-████████╗███████╗███████╗████████╗███╗   ██╗███████╗████████╗
-╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝████╗  ██║██╔════╝╚══██╔══╝
-   ██║   █████╗  ███████╗   ██║   ██╔██╗ ██║█████╗     ██║   
-   ██║   ██╔══╝  ╚════██║   ██║   ██║╚██╗██║██╔══╝     ██║   
-   ██║   ███████╗███████║   ██║   ██║ ╚████║███████╗   ██║   
-   ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚═╝  ╚═══╝╚══════╝   ╚═╝   
+ * /$$$$$$  /$$             /$$      /$$                  
+ *  /$$__  $$| $$            | $$     |__/                  
+ * | $$  \__/$$$$$$   /$$$$$$| $$   /$$/$$/$$$$$$$  /$$$$$$ 
+ * |  $$$$$|_  $$_/  |____  $| $$  /$$| $| $$__  $$/$$__  $$
+ *  \____  $$| $$     /$$$$$$| $$$$$$/| $| $$  \ $| $$  \ $$
+ *  /$$  \ $$| $$ /$$/$$__  $| $$_  $$| $| $$  | $| $$  | $$
+ * |  $$$$$$/|  $$$$|  $$$$$$| $$ \  $| $| $$  | $|  $$$$$$$
+ *  \______/  \___/  \_______|__/  \__|__|__/  |__/\____  $$
+ *                                                 /$$  \ $$
+ *                                                |  $$$$$$/
+ *                                                 \______/                                                                                       
+ *
+ * ████████╗███████╗███████╗████████╗███╗   ██╗███████╗████████╗
+ * ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝████╗  ██║██╔════╝╚══██╔══╝
+ *    ██║   █████╗  ███████╗   ██║   ██╔██╗ ██║█████╗     ██║   
+ *    ██║   ██╔══╝  ╚════██║   ██║   ██║╚██╗██║██╔══╝     ██║   
+ *    ██║   ███████╗███████║   ██║   ██║ ╚████║███████╗   ██║   
+ *    ╚═╝   ╚══════╝╚══════╝   ╚═╝   ╚═╝  ╚═══╝╚══════╝   ╚═╝   
  * @title Staking Mate contract
  * @author jistro.eth ariutokintumi.eth
  * @notice This contract manages the staking mechanism for the EVVM ecosystem
@@ -135,8 +133,7 @@ contract Staking {
     BoolTypeProposal private allowPublicStaking;
 
     /// @dev Address representing the principal Principal Token
-    address private constant PRINCIPAL_TOKEN_ADDRESS =
-        0x0000000000000000000000000000000000000001;
+    address private constant PRINCIPAL_TOKEN_ADDRESS = 0x0000000000000000000000000000000000000001;
 
     /// @dev One-time setup breaker for estimator and EVVM addresses
     bytes1 private breakerSetupEstimatorAndEvvm;
@@ -184,10 +181,7 @@ contract Staking {
      * @param _estimator Address of the Estimator contract
      * @param _evvm Address of the EVVM core contract
      */
-    function _setupEstimatorAndEvvm(
-        address _estimator,
-        address _evvm
-    ) external {
+    function _setupEstimatorAndEvvm(address _estimator, address _evvm) external {
         if (breakerSetupEstimatorAndEvvm == 0x00) revert();
 
         estimator.actual = _estimator;
@@ -202,13 +196,10 @@ contract Staking {
      * @param amountOfStaking Amount of staking tokens to stake/unstake
      * @param signature_EVVM Signature for the EVVM contract transaction
      */
-    function goldenStaking(
-        bool isStaking,
-        uint256 amountOfStaking,
-        bytes memory signature_EVVM
-    ) external {
-        if (msg.sender != goldenFisher.actual)
+    function goldenStaking(bool isStaking, uint256 amountOfStaking, bytes memory signature_EVVM) external {
+        if (msg.sender != goldenFisher.actual) {
             revert ErrorsLib.SenderIsNotGoldenFisher();
+        }
 
         stakingUserProcess(
             goldenFisher.actual,
@@ -245,33 +236,21 @@ contract Staking {
     ) external {
         if (
             !SignatureUtils.verifyMessageSignedForStake(
-                Evvm(EVVM_ADDRESS).getEvvmID(),
-                user,
-                false,
-                isStaking,
-                1,
-                nonce,
-                signature
+                Evvm(EVVM_ADDRESS).getEvvmID(), user, false, isStaking, 1, nonce, signature
             )
         ) revert ErrorsLib.InvalidSignatureOnStaking();
 
-        if (checkIfStakeNonceUsed(user, nonce))
+        if (checkIfStakeNonceUsed(user, nonce)) {
             revert ErrorsLib.StakingNonceAlreadyUsed();
+        }
 
         presaleClaims(isStaking, user);
 
-        if (!allowPresaleStaking.flag)
+        if (!allowPresaleStaking.flag) {
             revert ErrorsLib.PresaleStakingDisabled();
+        }
 
-        stakingUserProcess(
-            user,
-            1,
-            isStaking,
-            priorityFee_EVVM,
-            nonce_EVVM,
-            priorityFlag_EVVM,
-            signature_EVVM
-        );
+        stakingUserProcess(user, 1, isStaking, priorityFee_EVVM, nonce_EVVM, priorityFlag_EVVM, signature_EVVM);
 
         stakingNonce[user][nonce] = true;
     }
@@ -290,15 +269,17 @@ contract Staking {
                 if (_isStaking) {
                     // staking
 
-                    if (userPresaleStaker[_user].stakingAmount >= 2)
+                    if (userPresaleStaker[_user].stakingAmount >= 2) {
                         revert ErrorsLib.UserPresaleStakerLimitExceeded();
+                    }
 
                     userPresaleStaker[_user].stakingAmount++;
                 } else {
                     // unstaking
 
-                    if (userPresaleStaker[_user].stakingAmount == 0)
+                    if (userPresaleStaker[_user].stakingAmount == 0) {
                         revert ErrorsLib.UserPresaleStakerLimitExceeded();
+                    }
 
                     userPresaleStaker[_user].stakingAmount--;
                 }
@@ -338,27 +319,16 @@ contract Staking {
 
         if (
             !SignatureUtils.verifyMessageSignedForStake(
-                Evvm(EVVM_ADDRESS).getEvvmID(),
-                user,
-                true,
-                isStaking,
-                amountOfStaking,
-                nonce,
-                signature
+                Evvm(EVVM_ADDRESS).getEvvmID(), user, true, isStaking, amountOfStaking, nonce, signature
             )
         ) revert ErrorsLib.InvalidSignatureOnStaking();
 
-        if (checkIfStakeNonceUsed(user, nonce))
+        if (checkIfStakeNonceUsed(user, nonce)) {
             revert ErrorsLib.StakingNonceAlreadyUsed();
+        }
 
         stakingUserProcess(
-            user,
-            amountOfStaking,
-            isStaking,
-            priorityFee_EVVM,
-            nonce_EVVM,
-            priorityFlag_EVVM,
-            signature_EVVM
+            user, amountOfStaking, isStaking, priorityFee_EVVM, nonce_EVVM, priorityFlag_EVVM, signature_EVVM
         );
 
         stakingNonce[user][nonce] = true;
@@ -404,21 +374,16 @@ contract Staking {
         if (isStaking) {
             if (
                 !SignatureUtils.verifyMessageSignedForPublicServiceStake(
-                    Evvm(EVVM_ADDRESS).getEvvmID(),
-                    user,
-                    service,
-                    isStaking,
-                    amountOfStaking,
-                    nonce,
-                    signature
+                    Evvm(EVVM_ADDRESS).getEvvmID(), user, service, isStaking, amountOfStaking, nonce, signature
                 )
             ) revert ErrorsLib.InvalidSignatureOnStaking();
         } else {
             if (service != user) revert ErrorsLib.UserAndServiceMismatch();
         }
 
-        if (checkIfStakeNonceUsed(user, nonce))
+        if (checkIfStakeNonceUsed(user, nonce)) {
             revert ErrorsLib.StakingNonceAlreadyUsed();
+        }
 
         stakingServiceProcess(
             user,
@@ -457,14 +422,7 @@ contract Staking {
         bytes memory signature_EVVM
     ) internal {
         stakingBaseProcess(
-            user,
-            service,
-            isStaking,
-            amountOfStaking,
-            priorityFee_EVVM,
-            nonce_EVVM,
-            priorityFlag_EVVM,
-            signature_EVVM
+            user, service, isStaking, amountOfStaking, priorityFee_EVVM, nonce_EVVM, priorityFlag_EVVM, signature_EVVM
         );
     }
 
@@ -489,14 +447,7 @@ contract Staking {
         bytes memory signature_EVVM
     ) internal {
         stakingBaseProcess(
-            user,
-            user,
-            isStaking,
-            amountOfStaking,
-            priorityFee_EVVM,
-            nonce_EVVM,
-            priorityFlag_EVVM,
-            signature_EVVM
+            user, user, isStaking, amountOfStaking, priorityFee_EVVM, nonce_EVVM, priorityFlag_EVVM, signature_EVVM
         );
     }
 
@@ -525,9 +476,9 @@ contract Staking {
         uint256 auxSMsteBalance;
 
         if (isStaking) {
-            if (
-                getTimeToUserUnlockStakingTime(stakingAccount) > block.timestamp
-            ) revert ErrorsLib.UserMustWaitToStakeAgain();
+            if (getTimeToUserUnlockStakingTime(stakingAccount) > block.timestamp) {
+                revert ErrorsLib.UserMustWaitToStakeAgain();
+            }
 
             makePay(
                 userAccount,
@@ -542,49 +493,30 @@ contract Staking {
 
             auxSMsteBalance = userHistory[stakingAccount].length == 0
                 ? amountOfStaking
-                : userHistory[stakingAccount][
-                    userHistory[stakingAccount].length - 1
-                ].totalStaked + amountOfStaking;
+                : userHistory[stakingAccount][userHistory[stakingAccount].length - 1].totalStaked + amountOfStaking;
         } else {
             if (amountOfStaking == getUserAmountStaked(stakingAccount)) {
-                if (
-                    getTimeToUserUnlockFullUnstakingTime(stakingAccount) >
-                    block.timestamp
-                ) revert ErrorsLib.UserMustWaitToFullUnstake();
+                if (getTimeToUserUnlockFullUnstakingTime(stakingAccount) > block.timestamp) {
+                    revert ErrorsLib.UserMustWaitToFullUnstake();
+                }
 
                 Evvm(EVVM_ADDRESS).pointStaker(stakingAccount, 0x00);
             }
 
             // Only for user unstaking, not service
             if (userAccount == stakingAccount && priorityFee_EVVM != 0) {
-                makePay(
-                    userAccount,
-                    priorityFee_EVVM,
-                    0,
-                    priorityFlag_EVVM,
-                    nonce_EVVM,
-                    signature_EVVM
-                );
+                makePay(userAccount, priorityFee_EVVM, 0, priorityFlag_EVVM, nonce_EVVM, signature_EVVM);
             }
 
             auxSMsteBalance =
-                userHistory[stakingAccount][
-                    userHistory[stakingAccount].length - 1
-                ].totalStaked -
-                amountOfStaking;
+                userHistory[stakingAccount][userHistory[stakingAccount].length - 1].totalStaked - amountOfStaking;
 
-            makeCaPay(
-                PRINCIPAL_TOKEN_ADDRESS,
-                stakingAccount,
-                (PRICE_OF_STAKING * amountOfStaking)
-            );
+            makeCaPay(PRINCIPAL_TOKEN_ADDRESS, stakingAccount, (PRICE_OF_STAKING * amountOfStaking));
         }
 
         userHistory[stakingAccount].push(
             HistoryMetadata({
-                transactionType: isStaking
-                    ? bytes32(uint256(1))
-                    : bytes32(uint256(2)),
+                transactionType: isStaking ? bytes32(uint256(1)) : bytes32(uint256(2)),
                 amount: amountOfStaking,
                 timestamp: block.timestamp,
                 totalStaked: auxSMsteBalance
@@ -593,9 +525,7 @@ contract Staking {
 
         if (Evvm(EVVM_ADDRESS).isAddressStaker(msg.sender)) {
             makeCaPay(
-                PRINCIPAL_TOKEN_ADDRESS,
-                msg.sender,
-                (Evvm(EVVM_ADDRESS).getRewardAmount() * 2) + priorityFee_EVVM
+                PRINCIPAL_TOKEN_ADDRESS, msg.sender, (Evvm(EVVM_ADDRESS).getRewardAmount() * 2) + priorityFee_EVVM
             );
         }
     }
@@ -610,9 +540,7 @@ contract Staking {
      * @return idToOverwriteUserHistory Index in user history to update with reward info
      * @return timestampToBeOverwritten Timestamp to record for the reward transaction
      */
-    function gimmeYiel(
-        address user
-    )
+    function gimmeYiel(address user)
         external
         returns (
             bytes32 epochAnswer,
@@ -634,19 +562,12 @@ contract Staking {
             if (amountTotalToBeRewarded > 0) {
                 makeCaPay(tokenToBeRewarded, user, amountTotalToBeRewarded);
 
-                userHistory[user][idToOverwriteUserHistory]
-                    .transactionType = epochAnswer;
-                userHistory[user][idToOverwriteUserHistory]
-                    .amount = amountTotalToBeRewarded;
-                userHistory[user][idToOverwriteUserHistory]
-                    .timestamp = timestampToBeOverwritten;
+                userHistory[user][idToOverwriteUserHistory].transactionType = epochAnswer;
+                userHistory[user][idToOverwriteUserHistory].amount = amountTotalToBeRewarded;
+                userHistory[user][idToOverwriteUserHistory].timestamp = timestampToBeOverwritten;
 
                 if (Evvm(EVVM_ADDRESS).isAddressStaker(msg.sender)) {
-                    makeCaPay(
-                        PRINCIPAL_TOKEN_ADDRESS,
-                        msg.sender,
-                        (Evvm(EVVM_ADDRESS).getRewardAmount() * 1)
-                    );
+                    makeCaPay(PRINCIPAL_TOKEN_ADDRESS, msg.sender, (Evvm(EVVM_ADDRESS).getRewardAmount() * 1));
                 }
             }
         }
@@ -695,11 +616,7 @@ contract Staking {
      * @param user Address of the recipient
      * @param amount Amount of tokens to distribute
      */
-    function makeCaPay(
-        address tokenAddress,
-        address user,
-        uint256 amount
-    ) internal {
+    function makeCaPay(address tokenAddress, address user, uint256 amount) internal {
         Evvm(EVVM_ADDRESS).caPay(user, tokenAddress, amount);
     }
 
@@ -759,9 +676,7 @@ contract Staking {
      * @dev Can only be called by the proposed admin after the time delay has passed
      */
     function acceptNewAdmin() external {
-        if (
-            msg.sender != admin.proposal || admin.timeToAccept > block.timestamp
-        ) {
+        if (msg.sender != admin.proposal || admin.timeToAccept > block.timestamp) {
             revert();
         }
         admin.actual = admin.proposal;
@@ -788,9 +703,7 @@ contract Staking {
         goldenFisher.timeToAccept = 0;
     }
 
-    function proposeSetSecondsToUnlockStaking(
-        uint256 _secondsToUnlockStaking
-    ) external onlyOwner {
+    function proposeSetSecondsToUnlockStaking(uint256 _secondsToUnlockStaking) external onlyOwner {
         secondsToUnlockStaking.proposal = _secondsToUnlockStaking;
         secondsToUnlockStaking.timeToAccept = block.timestamp + 1 days;
     }
@@ -809,9 +722,7 @@ contract Staking {
         secondsToUnlockStaking.timeToAccept = 0;
     }
 
-    function prepareSetSecondsToUnllockFullUnstaking(
-        uint256 _secondsToUnllockFullUnstaking
-    ) external onlyOwner {
+    function prepareSetSecondsToUnllockFullUnstaking(uint256 _secondsToUnllockFullUnstaking) external onlyOwner {
         secondsToUnllockFullUnstaking.proposal = _secondsToUnllockFullUnstaking;
         secondsToUnllockFullUnstaking.timeToAccept = block.timestamp + 1 days;
     }
@@ -825,8 +736,7 @@ contract Staking {
         if (secondsToUnllockFullUnstaking.timeToAccept > block.timestamp) {
             revert();
         }
-        secondsToUnllockFullUnstaking.actual = secondsToUnllockFullUnstaking
-            .proposal;
+        secondsToUnllockFullUnstaking.actual = secondsToUnllockFullUnstaking.proposal;
         secondsToUnllockFullUnstaking.proposal = 0;
         secondsToUnllockFullUnstaking.timeToAccept = 0;
     }
@@ -843,10 +753,7 @@ contract Staking {
         if (allowPublicStaking.timeToAccept > block.timestamp) {
             revert();
         }
-        allowPublicStaking = BoolTypeProposal({
-            flag: !allowPublicStaking.flag,
-            timeToAccept: 0
-        });
+        allowPublicStaking = BoolTypeProposal({flag: !allowPublicStaking.flag, timeToAccept: 0});
     }
 
     function prepareChangeAllowPresaleStaking() external onlyOwner {
@@ -861,10 +768,7 @@ contract Staking {
         if (allowPresaleStaking.timeToAccept > block.timestamp) {
             revert();
         }
-        allowPresaleStaking = BoolTypeProposal({
-            flag: !allowPresaleStaking.flag,
-            timeToAccept: 0
-        });
+        allowPresaleStaking = BoolTypeProposal({flag: !allowPresaleStaking.flag, timeToAccept: 0});
     }
 
     function proposeEstimator(address _estimator) external onlyOwner {
@@ -896,9 +800,7 @@ contract Staking {
      * @param _account Address to query the history for
      * @return Array of HistoryMetadata containing all transactions
      */
-    function getAddressHistory(
-        address _account
-    ) public view returns (HistoryMetadata[] memory) {
+    function getAddressHistory(address _account) public view returns (HistoryMetadata[] memory) {
         return userHistory[_account];
     }
 
@@ -908,9 +810,7 @@ contract Staking {
      * @param _account Address to query the history size for
      * @return Number of transactions in the history
      */
-    function getSizeOfAddressHistory(
-        address _account
-    ) public view returns (uint256) {
+    function getSizeOfAddressHistory(address _account) public view returns (uint256) {
         return userHistory[_account].length;
     }
 
@@ -921,10 +821,7 @@ contract Staking {
      * @param _index Index of the transaction to retrieve (0-based)
      * @return HistoryMetadata of the transaction at the specified index
      */
-    function getAddressHistoryByIndex(
-        address _account,
-        uint256 _index
-    ) public view returns (HistoryMetadata memory) {
+    function getAddressHistoryByIndex(address _account, uint256 _index) public view returns (HistoryMetadata memory) {
         return userHistory[_account][_index];
     }
 
@@ -943,20 +840,14 @@ contract Staking {
      * @param _account Address to check the unlock time for
      * @return Timestamp when full unstaking will be allowed
      */
-    function getTimeToUserUnlockFullUnstakingTime(
-        address _account
-    ) public view returns (uint256) {
+    function getTimeToUserUnlockFullUnstakingTime(address _account) public view returns (uint256) {
         for (uint256 i = userHistory[_account].length; i > 0; i--) {
             if (userHistory[_account][i - 1].totalStaked == 0) {
-                return
-                    userHistory[_account][i - 1].timestamp +
-                    secondsToUnllockFullUnstaking.actual;
+                return userHistory[_account][i - 1].timestamp + secondsToUnllockFullUnstaking.actual;
             }
         }
 
-        return
-            userHistory[_account][0].timestamp +
-            secondsToUnllockFullUnstaking.actual;
+        return userHistory[_account][0].timestamp + secondsToUnllockFullUnstaking.actual;
     }
 
     /**
@@ -965,18 +856,14 @@ contract Staking {
      * @param _account Address to check the unlock time for
      * @return Timestamp when staking will be allowed again (0 if already allowed)
      */
-    function getTimeToUserUnlockStakingTime(
-        address _account
-    ) public view returns (uint256) {
+    function getTimeToUserUnlockStakingTime(address _account) public view returns (uint256) {
         uint256 lengthOfHistory = userHistory[_account].length;
 
         if (lengthOfHistory == 0) {
             return 0;
         }
         if (userHistory[_account][lengthOfHistory - 1].totalStaked == 0) {
-            return
-                userHistory[_account][lengthOfHistory - 1].timestamp +
-                secondsToUnlockStaking.actual;
+            return userHistory[_account][lengthOfHistory - 1].timestamp + secondsToUnlockStaking.actual;
         } else {
             return 0;
         }
@@ -1006,9 +893,7 @@ contract Staking {
      * @param _account Address to check the staked amount for
      * @return Amount of staking tokens currently staked by the user
      */
-    function getUserAmountStaked(
-        address _account
-    ) public view returns (uint256) {
+    function getUserAmountStaked(address _account) public view returns (uint256) {
         uint256 lengthOfHistory = userHistory[_account].length;
 
         if (lengthOfHistory == 0) {
@@ -1025,10 +910,7 @@ contract Staking {
      * @param _nonce Nonce value to check
      * @return True if the nonce has been used, false otherwise
      */
-    function checkIfStakeNonceUsed(
-        address _account,
-        uint256 _nonce
-    ) public view returns (bool) {
+    function checkIfStakeNonceUsed(address _account, uint256 _nonce) public view returns (bool) {
         return stakingNonce[_account][_nonce];
     }
 
@@ -1057,13 +939,8 @@ contract Staking {
      * @return isAllow True if the address is allowed for presale staking
      * @return stakingAmount Number of staking tokens currently staked in presale (max 2)
      */
-    function getPresaleStaker(
-        address _account
-    ) external view returns (bool, uint256) {
-        return (
-            userPresaleStaker[_account].isAllow,
-            userPresaleStaker[_account].stakingAmount
-        );
+    function getPresaleStaker(address _account) external view returns (bool, uint256) {
+        return (userPresaleStaker[_account].isAllow, userPresaleStaker[_account].stakingAmount);
     }
 
     /**
@@ -1098,11 +975,7 @@ contract Staking {
      * @dev Includes current flag state and any pending changes with timestamps
      * @return BoolTypeProposal struct containing flag and timeToAccept
      */
-    function getAllDataOfAllowPublicStaking()
-        external
-        view
-        returns (BoolTypeProposal memory)
-    {
+    function getAllDataOfAllowPublicStaking() external view returns (BoolTypeProposal memory) {
         return allowPublicStaking;
     }
 
@@ -1111,11 +984,7 @@ contract Staking {
      * @dev Includes current flag state and any pending changes with timestamps
      * @return BoolTypeProposal struct containing flag and timeToAccept
      */
-    function getAllowPresaleStaking()
-        external
-        view
-        returns (BoolTypeProposal memory)
-    {
+    function getAllowPresaleStaking() external view returns (BoolTypeProposal memory) {
         return allowPresaleStaking;
     }
 
