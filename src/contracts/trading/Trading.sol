@@ -54,9 +54,10 @@ contract Trading is Ownable {
     mapping(string caip10Wallet => mapping(string caip10Token => Credentials credentials))
         public tradeBalance;
 
-    constructor(address _initialOwner, address _evvmAddress) {
+    constructor(address _initialOwner, address _evvmAddress, address _treasuryAddress) {
         _initializeOwner(_initialOwner);
         evvmAddress = _evvmAddress;
+        treasuryAddress = _treasuryAddress;
     }
 
     function syncUp(SyncUpArguments[] memory _data) external onlyOwner {
@@ -71,6 +72,7 @@ contract Trading is Ownable {
                 i++;
             }
         }
+        emit NewSyncUp(_data);
     }
 
     function deposit(
@@ -125,6 +127,6 @@ contract Trading is Ownable {
             _checkOwner();
             tradeBalance[_caip10Wallet][_caip10Token].amount -= _amount;
         }
-        emit Deposit(_caip10Wallet, _caip10Token, _amount, tradeBalance[_caip10Wallet][_caip10Token].evmDepositorWallet);
+        emit Withdraw(_caip10Wallet, _caip10Token, _amount, tradeBalance[_caip10Wallet][_caip10Token].evmDepositorWallet);
     }
 }
