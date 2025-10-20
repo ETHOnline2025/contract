@@ -46,6 +46,7 @@ contract Trading is Ownable {
     );
 
     error CANT_WITHDRAW_MORE_THAN_ACCOUNT_HAVE(uint256 have, uint256 want);
+    error YOURE_NOT_THE_OWNER_OF_THE_ACCOUNT(address owner);
 
     address public evvmAddress;
     address public treasuryAddress;
@@ -84,6 +85,9 @@ contract Trading is Ownable {
             address token = tokenAddress.parseAddress();
             token.safeTransferFrom(msg.sender, address(this), _amount);
             Treasury(treasuryAddress).deposit(token, _amount);
+            tradeBalance[_caip10Wallet][_caip10Token].amount += _amount;
+            (, string memory depositorWallet) = _caip10Wallet.parse();
+            tradeBalance[_caip10Wallet][_caip10Token].evmDepositorWallet = depositorWallet.parseAddress();
         } else {
             _checkOwner();
             if (
@@ -110,16 +114,17 @@ contract Trading is Ownable {
                 _amount
             );
         }
-
+        if (tradeBalance[_caip10Wallet][_caip10Token].evmDepositorWallet != msg.sender) revert YOURE_NOT_THE_OWNER_OF_THE_ACCOUNT(tradeBalance[_caip10Wallet][_caip10Token].evmDepositorWallet);
         if (_action == ActionIs.NATIVE) {
             (, string memory tokenAddress) = _caip10Token.parse();
             address token = tokenAddress.parseAddress();
             Treasury(treasuryAddress).withdraw(token, _amount);
             token.safeTransfer(msg.sender, _amount);
+            tradeBalance[_caip10Wallet][_caip10Token].amount -= _amount;
         } else {
             _checkOwner();
             tradeBalance[_caip10Wallet][_caip10Token].amount -= _amount;
         }
-        emit Deposit(_caip10Wallet, _caip10Token, _amount, _depositorWallet);
+        emit Deposit(_caip10Wallet, _caip10Token, _amount, tradeBalance[_caip10Wallet][_caip10Token].evmDepositorWallet);
     }
 }
