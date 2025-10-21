@@ -8,6 +8,7 @@ import {Estimator} from "@EVVM/testnet/contracts/staking/Estimator.sol";
 import {NameService} from "@EVVM/testnet/contracts/nameService/NameService.sol";
 import {EvvmStructs} from "@EVVM/testnet/contracts/evvm/lib/EvvmStructs.sol";
 import {Treasury} from "@EVVM/testnet/contracts/treasury/Treasury.sol";
+import {Trading} from "@EVVM/testnet/contracts/trading/Trading.sol";
 
 contract DeployTestnetOnAnvil is Script {
     Staking sMate;
@@ -15,6 +16,7 @@ contract DeployTestnetOnAnvil is Script {
     Estimator estimator;
     NameService nameService;
     Treasury treasury;
+    Trading trading;
 
     struct AddressData {
         address activator;
@@ -88,13 +90,23 @@ contract DeployTestnetOnAnvil is Script {
 
         treasury = new Treasury(address(evvm));
 
+        // Deploy Trading contract with all required addresses
+        trading = new Trading(addressData.admin, address(evvm), address(treasury), address(nameService));
+
+        // Setup integrations
         sMate._setupEstimatorAndEvvm(address(estimator), address(evvm));
         evvm._setupNameServiceAndTreasuryAddress(address(nameService), address(treasury));
+
+        // Authorize Trading contract to modify EVVM balances
+        evvm.setAuthorizedTradingContract(address(trading));
 
         vm.stopBroadcast();
 
         console2.log("SMate deployed at:", address(sMate));
         console2.log("Evvm deployed at:", address(evvm));
         console2.log("Estimator deployed at:", address(estimator));
+        console2.log("NameService deployed at:", address(nameService));
+        console2.log("Treasury deployed at:", address(treasury));
+        console2.log("Trading deployed at:", address(trading));
     }
 }
