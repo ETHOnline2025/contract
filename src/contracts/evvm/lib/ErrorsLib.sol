@@ -14,4 +14,10 @@ library ErrorsLib {
     error NotAnCA();
     error SenderIsNotTreasury();
     error WindowToChangeEvvmIDExpired();
+    
+    // CAIP-10 related errors
+    error InvalidCaip10Format();
+    error Caip10AlreadyRegistered();
+    error Caip10EvmAddressMismatch();
+    error Caip10NotRegistered();
 }

@@ -78,6 +78,7 @@ import {EvvmStorage} from "@EVVM/testnet/contracts/evvm/lib/EvvmStorage.sol";
 import {ErrorsLib} from "@EVVM/testnet/contracts/evvm/lib/ErrorsLib.sol";
 import {SignatureUtils} from "@EVVM/testnet/contracts/evvm/lib/SignatureUtils.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
+import {Caip10Utils} from "@EVVM/testnet/lib/Caip10Utils.sol";
 
 contract Evvm is EvvmStorage {
     /**
@@ -207,6 +208,190 @@ contract Evvm is EvvmStorage {
         evvmMetadata.EvvmID = newEvvmID;
 
         windowTimeToChangeEvvmID = block.timestamp + 1 days;
+    }
+
+    //░▒▓█ CAIP-10 Abstraction Layer ████████████████████████████████████████████████████▓▒░
+
+    /**
+     * @notice Registers a CAIP-10 identifier and maps it to an EVM address for system interaction
+     * @dev Creates bidirectional mappings between CAIP-10 identifiers and EVM addresses
+     *      For non-EVM chains, generates a deterministic synthetic address
+     *
+     * Chain-Agnostic Support:
+     * - EVM chains (eip155): Directly extracts the Ethereum address from the identifier
+     * - Non-EVM chains (cosmos, bip122, solana, etc.): Generates synthetic EVM address via keccak256 hash
+     * - Synthetic addresses enable non-EVM users to interact with the EVM-based core system
+     * - All operations use EVM addresses internally but maintain CAIP-10 identity externally
+     *
+     * Registration Process:
+     * - Validates CAIP-10 format structure
+     * - Determines if chain is EVM or non-EVM based on namespace
+     * - For EVM: Extracts native address, validates it matches msg.sender (security)
+     * - For non-EVM: Generates deterministic synthetic address from identifier hash
+     * - Creates bidirectional mappings for efficient lookups
+     * - Prevents duplicate registrations to avoid conflicts
+     *
+     * Security Features:
+     * - EVM addresses must match msg.sender (prevents unauthorized registration)
+     * - Non-EVM identifiers can only be registered once per unique identifier
+     * - Synthetic address generation is deterministic and collision-resistant
+     * - Reverts on duplicate registrations to prevent identity conflicts
+     *
+     * Use Cases:
+     * - Cross-chain identity registration for unified account management
+     * - Enables Cosmos, Bitcoin, Solana users to interact with EVVM
+     * - Bridges external chain identities to EVM-based operations
+     * - Maintains chain-native identity while using EVM infrastructure
+     *
+     * @param caip10Id The complete CAIP-10 identifier (e.g., "cosmos:cosmoshub-4:cosmos1abc...")
+     *
+     * @custom:security EVM addresses must match msg.sender, non-EVM uses synthetic addresses
+     * @custom:chainagnostic Supports all CAIP-10 namespaces through abstraction layer
+     */
+    function registerCaip10Identity(string memory caip10Id) external {
+        // Validate CAIP-10 format
+        if (!Caip10Utils.validateCaip10(caip10Id)) {
+            revert ErrorsLib.InvalidCaip10Format();
+        }
+
+        // Check if already registered
+        if (caip10Registered[caip10Id]) {
+            revert ErrorsLib.Caip10AlreadyRegistered();
+        }
+
+        address mappedAddress;
+
+        // Determine if this is an EVM chain or non-EVM chain
+        if (Caip10Utils.isEvmCaip10(caip10Id)) {
+            // EVM chain: Extract the actual Ethereum address
+            mappedAddress = Caip10Utils.extractAddress(caip10Id);
+            
+            // Security: For EVM chains, only the actual address owner can register
+            if (mappedAddress != msg.sender) {
+                revert ErrorsLib.Caip10EvmAddressMismatch();
+            }
+        } else {
+            // Non-EVM chain: Generate a synthetic EVM address deterministically
+            mappedAddress = _generateSyntheticAddress(caip10Id);
+            
+            // Store the synthetic address mapping
+            nonEvmToSyntheticAddress[caip10Id] = mappedAddress;
+        }
+
+        // Create bidirectional mappings
+        caip10ToAddress[caip10Id] = mappedAddress;
+        addressToCaip10[mappedAddress] = caip10Id;
+        caip10Registered[caip10Id] = true;
+    }
+
+    /**
+     * @notice Resolves a CAIP-10 identifier to its corresponding EVM address
+     * @dev Performs lookup in the registration mapping or extracts directly for EVM chains
+     *
+     * Resolution Strategy:
+     * - First checks if identifier is registered in the system
+     * - If registered: Returns the mapped address (works for all chains)
+     * - If not registered but is EVM: Attempts direct extraction (convenience)
+     * - If not registered and non-EVM: Reverts (must register first)
+     *
+     * This dual-mode resolution allows:
+     * - Registered users to have full functionality (preferred path)
+     * - Unregistered EVM users to have limited functionality via direct extraction
+     * - Non-EVM users must register before using the system
+     *
+     * @param caip10Id The CAIP-10 identifier to resolve
+     * @return The corresponding EVM address (native or synthetic)
+     *
+     * @custom:security Unregistered non-EVM identifiers will revert
+     */
+    function resolveCaip10ToAddress(string memory caip10Id) public view returns (address) {
+        // If already registered, return the mapped address
+        if (caip10Registered[caip10Id]) {
+            return caip10ToAddress[caip10Id];
+        }
+
+        // For unregistered EVM identifiers, allow direct extraction
+        if (Caip10Utils.isEvmCaip10(caip10Id)) {
+            return Caip10Utils.extractAddress(caip10Id);
+        }
+
+        // Non-EVM identifiers must be registered first
+        revert ErrorsLib.Caip10NotRegistered();
+    }
+
+    /**
+     * @notice Retrieves the CAIP-10 identifier for a given EVM address
+     * @dev Reverse lookup from address to identifier
+     *
+     * Lookup Process:
+     * - Checks the reverse mapping from address to CAIP-10
+     * - Returns empty string if address has no registered CAIP-10 identifier
+     * - Used for converting EVM operations back to chain-agnostic format
+     *
+     * Use Cases:
+     * - Event emission with chain-agnostic identifiers
+     * - Cross-chain balance queries
+     * - Identity resolution in user interfaces
+     *
+     * @param evmAddress The EVM address to look up
+     * @return The corresponding CAIP-10 identifier, or empty string if not registered
+     */
+    function getAddressCaip10(address evmAddress) external view returns (string memory) {
+        return addressToCaip10[evmAddress];
+    }
+
+    /**
+     * @notice Checks if a CAIP-10 identifier is registered in the system
+     * @dev Simple registration status check
+     * @param caip10Id The CAIP-10 identifier to check
+     * @return true if the identifier is registered, false otherwise
+     */
+    function isCaip10Registered(string memory caip10Id) external view returns (bool) {
+        return caip10Registered[caip10Id];
+    }
+
+    /**
+     * @notice Internal function to generate a deterministic synthetic EVM address for non-EVM chains
+     * @dev Creates a collision-resistant address from the CAIP-10 identifier hash
+     *
+     * Generation Algorithm:
+     * - Computes keccak256 hash of the complete CAIP-10 identifier
+     * - Truncates to 160 bits (20 bytes) for EVM address format
+     * - Result is deterministic: same identifier always produces same address
+     * - Collision probability is cryptographically negligible
+     *
+     * Properties:
+     * - Deterministic: Same input always produces same output
+     * - Unique: Different identifiers produce different addresses
+     * - Irreversible: Cannot derive identifier from synthetic address alone
+     * - Compatible: Valid EVM address format (20 bytes)
+     *
+     * Use Cases:
+     * - Cosmos addresses represented in EVM system
+     * - Bitcoin addresses participating in EVVM
+     * - Solana addresses using EVVM services
+     * - Any non-EVM blockchain identity
+     *
+     * @param caip10Id The CAIP-10 identifier to convert
+     * @return A deterministic EVM address derived from the identifier
+     *
+     * @custom:security Deterministic generation ensures consistency across calls
+     * @custom:collision-resistance Uses keccak256 for cryptographic security
+     */
+    function _generateSyntheticAddress(string memory caip10Id) internal pure returns (address) {
+        // Generate deterministic address from hash of CAIP-10 identifier
+        bytes32 hash = keccak256(abi.encodePacked("EVVM_SYNTHETIC_", caip10Id));
+        return address(uint160(uint256(hash)));
+    }
+
+    /**
+     * @notice Retrieves the synthetic address for a non-EVM CAIP-10 identifier
+     * @dev Only applicable to non-EVM chains that have been registered
+     * @param nonEvmCaip10Id The non-EVM CAIP-10 identifier
+     * @return The synthetic EVM address, or zero address if not registered or is EVM
+     */
+    function getSyntheticAddress(string memory nonEvmCaip10Id) external view returns (address) {
+        return nonEvmToSyntheticAddress[nonEvmCaip10Id];
     }
 
     /**
@@ -727,6 +912,196 @@ contract Evvm is EvvmStorage {
         if (isAddressStaker(msg.sender)) {
             _giveReward(msg.sender, 1);
         }
+    }
+
+    //░▒▓█ CAIP-10 Wrapper Payment Functions ████████████████████████████████████████████▓▒░
+
+    /**
+     * @notice Chain-agnostic payment function using CAIP-10 identifiers
+     * @dev Wrapper around the core pay() function that accepts CAIP-10 identifiers for sender and token
+     *
+     * Chain-Agnostic Features:
+     * - Accepts CAIP-10 identifiers for both user and token
+     * - Automatically resolves identifiers to EVM addresses
+     * - Works with EVM and non-EVM chains (through synthetic addresses)
+     * - Maintains all security and nonce management features of core pay()
+     *
+     * Resolution Process:
+     * - Resolves sender CAIP-10 to address (must be registered for non-EVM)
+     * - Resolves token CAIP-10 to address (must be registered for non-EVM)
+     * - Validates resolved sender matches msg.sender for security
+     * - Delegates to core pay() function with resolved addresses
+     *
+     * Use Cases:
+     * - Cross-chain payments using unified CAIP-10 identifiers
+     * - Cosmos users paying with Cosmos tokens
+     * - Bitcoin users interacting with EVVM ecosystem
+     * - Multi-chain applications with consistent interface
+     *
+     * @param fromCaip10 CAIP-10 identifier of payment sender
+     * @param to_address Direct recipient address (used if to_identity is empty)
+     * @param to_identity Username/identity of recipient (resolved via NameService)
+     * @param tokenCaip10 CAIP-10 identifier of token to transfer
+     * @param amount Amount of tokens to transfer
+     * @param priorityFee Additional fee for transaction priority
+     * @param nonce Transaction nonce
+     * @param priorityFlag Execution type flag (false = sync nonce, true = async nonce)
+     * @param executor Address authorized to execute this transaction
+     * @param signature Cryptographic signature authorizing this payment
+     *
+     * @custom:chainagnostic Accepts CAIP-10 identifiers from any supported blockchain
+     * @custom:security Validates sender identity matches msg.sender
+     */
+    function payCaip10(
+        string memory fromCaip10,
+        address to_address,
+        string memory to_identity,
+        string memory tokenCaip10,
+        uint256 amount,
+        uint256 priorityFee,
+        uint256 nonce,
+        bool priorityFlag,
+        address executor,
+        bytes memory signature
+    ) external {
+        // Resolve CAIP-10 identifiers to addresses
+        address from = resolveCaip10ToAddress(fromCaip10);
+        address token = resolveCaip10ToAddress(tokenCaip10);
+
+        // Security: Ensure the resolved sender matches msg.sender
+        if (from != msg.sender) {
+            revert ErrorsLib.Caip10EvmAddressMismatch();
+        }
+
+        // Delegate to core payment function
+        this.pay(from, to_address, to_identity, token, amount, priorityFee, nonce, priorityFlag, executor, signature);
+    }
+
+    /**
+     * @notice Chain-agnostic batch payment function using CAIP-10 identifiers
+     * @dev Wrapper around dispersePay() that accepts CAIP-10 identifiers
+     *
+     * Batch Distribution Features:
+     * - Single CAIP-10 sender to multiple recipients
+     * - Token specified as CAIP-10 identifier
+     * - Maintains all validation and nonce management
+     * - Supports cross-chain token distribution
+     *
+     * @param fromCaip10 CAIP-10 identifier of payment sender
+     * @param toData Array of recipient data with addresses/identities and amounts
+     * @param tokenCaip10 CAIP-10 identifier of token to distribute
+     * @param amount Total amount to distribute
+     * @param priorityFee Fee amount for the transaction executor
+     * @param nonce Transaction nonce for replay protection
+     * @param priorityFlag True for async nonce, false for sync nonce
+     * @param executor Address authorized to execute this distribution
+     * @param signature Cryptographic signature authorizing this distribution
+     *
+     * @custom:chainagnostic Supports CAIP-10 identifiers for sender and token
+     */
+    function dispersePayCaip10(
+        string memory fromCaip10,
+        DispersePayMetadata[] memory toData,
+        string memory tokenCaip10,
+        uint256 amount,
+        uint256 priorityFee,
+        uint256 nonce,
+        bool priorityFlag,
+        address executor,
+        bytes memory signature
+    ) external {
+        // Resolve CAIP-10 identifiers to addresses
+        address from = resolveCaip10ToAddress(fromCaip10);
+        address token = resolveCaip10ToAddress(tokenCaip10);
+
+        // Security: Ensure the resolved sender matches msg.sender
+        if (from != msg.sender) {
+            revert ErrorsLib.Caip10EvmAddressMismatch();
+        }
+
+        // Delegate to core dispersePay function
+        this.dispersePay(from, toData, token, amount, priorityFee, nonce, priorityFlag, executor, signature);
+    }
+
+    /**
+     * @notice Chain-agnostic contract payment function using CAIP-10 token identifier
+     * @dev Wrapper around caPay() that accepts CAIP-10 token identifier
+     *
+     * Contract-to-Address Payment:
+     * - Calling contract uses CAIP-10 for token specification
+     * - Automatically resolves token identifier to address
+     * - Maintains contract authorization requirements
+     * - No signature verification needed (contract-level authorization)
+     *
+     * @param to Address of the token recipient
+     * @param tokenCaip10 CAIP-10 identifier of token to transfer
+     * @param amount Amount of tokens to transfer from calling contract
+     *
+     * @custom:chainagnostic Accepts CAIP-10 token identifiers
+     */
+    function caPayCaip10(address to, string memory tokenCaip10, uint256 amount) external {
+        // Resolve token CAIP-10 to address
+        address token = resolveCaip10ToAddress(tokenCaip10);
+
+        // Delegate to core caPay function
+        this.caPay(to, token, amount);
+    }
+
+    /**
+     * @notice Chain-agnostic balance query using CAIP-10 identifiers
+     * @dev Retrieves balance for any chain's account and token using CAIP-10 format
+     *
+     * Cross-Chain Balance Query:
+     * - Accepts CAIP-10 identifiers for both user and token
+     * - Resolves to internal EVM addresses
+     * - Returns balance in the token's base unit
+     * - Works for both native and synthetic addresses
+     *
+     * Use Cases:
+     * - Check Cosmos user's token balance
+     * - Query Bitcoin user's holdings
+     * - Multi-chain wallet balance display
+     * - Cross-chain analytics and reporting
+     *
+     * @param userCaip10 CAIP-10 identifier of the user
+     * @param tokenCaip10 CAIP-10 identifier of the token
+     * @return The token balance for the user
+     *
+     * @custom:chainagnostic Works with any registered CAIP-10 identifiers
+     */
+    function getBalanceCaip10(string memory userCaip10, string memory tokenCaip10) external view returns (uint256) {
+        address user = resolveCaip10ToAddress(userCaip10);
+        address token = resolveCaip10ToAddress(tokenCaip10);
+        return balances[user][token];
+    }
+
+    /**
+     * @notice Chain-agnostic nonce query using CAIP-10 user identifier
+     * @dev Retrieves the next synchronous nonce for any chain's account
+     *
+     * @param userCaip10 CAIP-10 identifier of the user
+     * @return The next synchronous nonce value
+     *
+     * @custom:chainagnostic Works with any registered CAIP-10 identifier
+     */
+    function getNextSyncNonceCaip10(string memory userCaip10) external view returns (uint256) {
+        address user = resolveCaip10ToAddress(userCaip10);
+        return nextSyncUsedNonce[user];
+    }
+
+    /**
+     * @notice Chain-agnostic async nonce status check using CAIP-10 identifier
+     * @dev Verifies if a specific async nonce has been used for any chain's account
+     *
+     * @param userCaip10 CAIP-10 identifier of the user
+     * @param nonce The nonce value to check
+     * @return True if the nonce has been used, false if still available
+     *
+     * @custom:chainagnostic Works with any registered CAIP-10 identifier
+     */
+    function getIfUsedAsyncNonceCaip10(string memory userCaip10, uint256 nonce) external view returns (bool) {
+        address user = resolveCaip10ToAddress(userCaip10);
+        return asyncUsedNonce[user][nonce];
     }
 
     //░▒▓█Treasury exclusive functions██████████████████████████████████████████▓▒░

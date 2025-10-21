@@ -30,6 +30,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeTransferLib} from "@solady/utils/SafeTransferLib.sol";
 import {Evvm} from "@EVVM/testnet/contracts/evvm/Evvm.sol";
 import {ErrorsLib} from "@EVVM/testnet/contracts/treasury/lib/ErrorsLib.sol";
+import {Caip10Utils} from "@EVVM/testnet/lib/Caip10Utils.sol";
 
 contract Treasury {
     /// @notice Address of the EVVM core contract
@@ -49,6 +50,39 @@ contract Treasury {
      * @param amount Token amount (ignored for ETH deposits)
      */
     function deposit(address token, uint256 amount) external payable {
+        _depositInternal(token, amount);
+    }
+
+    /**
+     * @notice Withdraw ETH or ERC20 tokens
+     * @param token Token address (address(0) for ETH)
+     * @param amount Amount to withdraw
+     */
+    function withdraw(address token, uint256 amount) external {
+        _withdrawInternal(token, amount);
+    }
+
+    /**
+     * @notice Deposit ETH or ERC20 tokens using CAIP-10 identifiers
+     * @param caip10Token CAIP-10 token address (e.g., "eip155:1:0x...")
+     * @param amount Token amount
+     */
+    function depositCaip10(string memory caip10Token, uint256 amount) external payable {
+        address token = Caip10Utils.extractAddress(caip10Token);
+        _depositInternal(token, amount);
+    }
+
+    /**
+     * @notice Withdraw ETH or ERC20 tokens using CAIP-10 identifiers
+     * @param caip10Token CAIP-10 token address (e.g., "eip155:1:0x...")
+     * @param amount Amount to withdraw
+     */
+    function withdrawCaip10(string memory caip10Token, uint256 amount) external {
+        address token = Caip10Utils.extractAddress(caip10Token);
+        _withdrawInternal(token, amount);
+    }
+
+    function _depositInternal(address token, uint256 amount) private {
         if (address(0) == token) {
             /// user is sending host native coin
             if (msg.value == 0) {
@@ -70,12 +104,7 @@ contract Treasury {
         }
     }
 
-    /**
-     * @notice Withdraw ETH or ERC20 tokens
-     * @param token Token address (address(0) for ETH)
-     * @param amount Amount to withdraw
-     */
-    function withdraw(address token, uint256 amount) external {
+    function _withdrawInternal(address token, uint256 amount) private {
         if (token == Evvm(evvmAddress).getEvvmMetadata().principalTokenAddress) {
             revert ErrorsLib.PrincipalTokenIsNotWithdrawable();
         }
