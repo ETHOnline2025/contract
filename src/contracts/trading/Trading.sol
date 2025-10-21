@@ -14,7 +14,7 @@ pragma solidity ^0.8.29;
 
 /**
  * @title Trading Contract
- * @author EVVM Team
+ * @author https://x.com/0xjsieth
  * @notice Chain-agnostic trading balance management system using CAIP-10 identifiers
  * @dev Manages trading balances for cross-chain users with deposit/withdraw functionality
  *

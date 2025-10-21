@@ -516,7 +516,7 @@ contract TradingTest is Test, EvvmStructs {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
-    // FUZZ TESTS
+    // FUZZ TESTS - BASIC
     // ═══════════════════════════════════════════════════════════════════════════════════
 
     function testFuzzDepositWithdraw(uint128 amount) public {
@@ -557,5 +557,333 @@ contract TradingTest is Test, EvvmStructs {
 
         assertEq(balance1, amount1);
         assertEq(balance2, amount2);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // ADVANCED FUZZ TESTS - EXTREME VALUES
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testFuzzDepositOtherChainExtremeValues(uint256 amount) public {
+        // Test with full uint256 range
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.OTHER_CHAIN, user1);
+
+        (, uint256 balance) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(balance, amount);
+    }
+
+    function testFuzzMultipleDepositsAccumulation(uint128 amount1, uint128 amount2, uint128 amount3) public {
+        // Test that multiple deposits accumulate correctly
+        vm.assume(uint256(amount1) + uint256(amount2) + uint256(amount3) <= type(uint256).max);
+
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount1, Trading.ActionIs.OTHER_CHAIN, user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount2, Trading.ActionIs.OTHER_CHAIN, user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount3, Trading.ActionIs.OTHER_CHAIN, user1);
+
+        (, uint256 balance) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(balance, uint256(amount1) + uint256(amount2) + uint256(amount3));
+    }
+
+    function testFuzzPartialWithdrawals(uint128 deposit, uint64 withdraw1, uint64 withdraw2) public {
+        // Test multiple partial withdrawals
+        vm.assume(deposit > 0);
+        vm.assume(uint256(withdraw1) + uint256(withdraw2) <= uint256(deposit));
+
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, deposit, Trading.ActionIs.OTHER_CHAIN, owner);
+
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdraw1, Trading.ActionIs.OTHER_CHAIN);
+        (, uint256 balance1) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(balance1, uint256(deposit) - uint256(withdraw1));
+
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdraw2, Trading.ActionIs.OTHER_CHAIN);
+        (, uint256 balance2) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(balance2, uint256(deposit) - uint256(withdraw1) - uint256(withdraw2));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // FUZZ TESTS - ERROR CONDITIONS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testFuzzWithdrawExceedsBalance(uint128 deposit, uint128 withdraw) public {
+        vm.assume(withdraw > deposit);
+
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, deposit, Trading.ActionIs.OTHER_CHAIN, owner);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(Trading.CANT_WITHDRAW_MORE_THAN_ACCOUNT_HAVE.selector, deposit, withdraw)
+        );
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdraw, Trading.ActionIs.OTHER_CHAIN);
+    }
+
+    function testFuzzUnauthorizedWithdrawal(uint128 amount, address randomUser) public {
+        vm.assume(randomUser != user1 && randomUser != address(0));
+        vm.assume(amount > 0 && amount <= 10000 * 10 ** 18);
+
+        // Deposit as user1
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE, address(0));
+
+        // Try to withdraw as different user
+        vm.prank(randomUser);
+        vm.expectRevert(abi.encodeWithSelector(Trading.YOURE_NOT_THE_OWNER_OF_THE_ACCOUNT.selector, user1));
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE);
+    }
+
+    function testFuzzInvalidSignature(uint256 nonce, uint256 wrongPrivateKey) public {
+        vm.assume(wrongPrivateKey != 0 && wrongPrivateKey != user1PrivateKey);
+        vm.assume(wrongPrivateKey < 115792089237316195423570985008687907852837564279074904382605163141518161494337);
+
+        uint256 evvmID = evvm.getEvvmID();
+
+        // Create signature with wrong private key
+        bytes32 messageHash = keccak256(
+            abi.encodePacked(
+                "\x19Ethereum Signed Message:\n",
+                Strings.toString(
+                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce)))
+                        .length
+                ),
+                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce))
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongPrivateKey, messageHash);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        vm.expectRevert(Trading.INVALID_SIGNATURE.selector);
+        trading.cancelOrder(CAIP10_WALLET_USER1, nonce, signature);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // FUZZ TESTS - BOUNDARY CONDITIONS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testFuzzMaxUint256Operations(uint256 amount) public {
+        // Test operations at uint256 boundaries
+        vm.assume(amount > 0);
+
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.OTHER_CHAIN, owner);
+
+        (, uint256 balance) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(balance, amount);
+
+        // Withdraw full amount
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.OTHER_CHAIN);
+
+        (, uint256 finalBalance) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(finalBalance, 0);
+    }
+
+    function testFuzzSyncUpOverwritePreviousBalance(uint128 initialAmount, uint128 newAmount) public {
+        // Test that syncUp correctly overwrites previous balances
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, initialAmount, Trading.ActionIs.OTHER_CHAIN, user1);
+
+        Trading.SyncUpArguments[] memory data = new Trading.SyncUpArguments[](1);
+        data[0] = Trading.SyncUpArguments({
+            caip10Wallet: CAIP10_WALLET_USER1,
+            caip10Token: caip10Token,
+            evmDepositorWallet: user1,
+            newAmount: newAmount
+        });
+
+        trading.syncUp(data);
+
+        (, uint256 balance) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(balance, newAmount); // Should be newAmount, not initialAmount + newAmount
+    }
+
+    function testFuzzMultipleSyncUpOperations(uint64 amount1, uint64 amount2, uint64 amount3) public {
+        // Test multiple syncUp operations in sequence
+        Trading.SyncUpArguments[] memory data1 = new Trading.SyncUpArguments[](1);
+        data1[0] = Trading.SyncUpArguments({
+            caip10Wallet: CAIP10_WALLET_USER1,
+            caip10Token: caip10Token,
+            evmDepositorWallet: user1,
+            newAmount: amount1
+        });
+        trading.syncUp(data1);
+
+        Trading.SyncUpArguments[] memory data2 = new Trading.SyncUpArguments[](1);
+        data2[0] = Trading.SyncUpArguments({
+            caip10Wallet: CAIP10_WALLET_USER1,
+            caip10Token: caip10Token,
+            evmDepositorWallet: user1,
+            newAmount: amount2
+        });
+        trading.syncUp(data2);
+
+        Trading.SyncUpArguments[] memory data3 = new Trading.SyncUpArguments[](1);
+        data3[0] = Trading.SyncUpArguments({
+            caip10Wallet: CAIP10_WALLET_USER1,
+            caip10Token: caip10Token,
+            evmDepositorWallet: user1,
+            newAmount: amount3
+        });
+        trading.syncUp(data3);
+
+        (, uint256 finalBalance) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(finalBalance, amount3); // Last syncUp wins
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // FUZZ TESTS - COMPLEX STATE TRANSITIONS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testFuzzDepositSyncUpWithdrawCycle(uint128 depositAmount, uint128 syncAmount, uint64 withdrawAmount)
+        public
+    {
+        vm.assume(withdrawAmount <= syncAmount);
+
+        // Deposit initial amount
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.OTHER_CHAIN, owner);
+
+        // SyncUp to new amount (overwrites)
+        Trading.SyncUpArguments[] memory data = new Trading.SyncUpArguments[](1);
+        data[0] = Trading.SyncUpArguments({
+            caip10Wallet: CAIP10_WALLET_USER1,
+            caip10Token: caip10Token,
+            evmDepositorWallet: owner,
+            newAmount: syncAmount
+        });
+        trading.syncUp(data);
+
+        // Withdraw from synced amount
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, Trading.ActionIs.OTHER_CHAIN);
+
+        (, uint256 finalBalance) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(finalBalance, uint256(syncAmount) - uint256(withdrawAmount));
+    }
+
+    function testFuzzMixedDepositModes(uint128 nativeAmount, uint128 otherChainAmount) public {
+        vm.assume(nativeAmount > 0 && nativeAmount <= 5000 * 10 ** 18);
+
+        // Deposit via NATIVE
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, nativeAmount, Trading.ActionIs.NATIVE, address(0));
+
+        // Deposit via OTHER_CHAIN (should accumulate)
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, otherChainAmount, Trading.ActionIs.OTHER_CHAIN, user1);
+
+        (, uint256 balance) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(balance, uint256(nativeAmount) + uint256(otherChainAmount));
+    }
+
+    function testFuzzCancelMultipleOrders(uint128 nonce1, uint128 nonce2, uint128 nonce3) public {
+        vm.assume(nonce1 != nonce2 && nonce2 != nonce3 && nonce1 != nonce3);
+
+        uint256 evvmID = evvm.getEvvmID();
+
+        // Cancel first order
+        bytes32 hash1 = keccak256(
+            abi.encodePacked(
+                "\x19Ethereum Signed Message:\n",
+                Strings.toString(
+                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce1)))
+                        .length
+                ),
+                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce1))
+            )
+        );
+        (uint8 v1, bytes32 r1, bytes32 s1) = vm.sign(user1PrivateKey, hash1);
+        trading.cancelOrder(CAIP10_WALLET_USER1, nonce1, abi.encodePacked(r1, s1, v1));
+
+        // Cancel second order
+        bytes32 hash2 = keccak256(
+            abi.encodePacked(
+                "\x19Ethereum Signed Message:\n",
+                Strings.toString(
+                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce2)))
+                        .length
+                ),
+                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce2))
+            )
+        );
+        (uint8 v2, bytes32 r2, bytes32 s2) = vm.sign(user1PrivateKey, hash2);
+        trading.cancelOrder(CAIP10_WALLET_USER1, nonce2, abi.encodePacked(r2, s2, v2));
+
+        // Cancel third order
+        bytes32 hash3 = keccak256(
+            abi.encodePacked(
+                "\x19Ethereum Signed Message:\n",
+                Strings.toString(
+                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce3)))
+                        .length
+                ),
+                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce3))
+            )
+        );
+        (uint8 v3, bytes32 r3, bytes32 s3) = vm.sign(user1PrivateKey, hash3);
+        trading.cancelOrder(CAIP10_WALLET_USER1, nonce3, abi.encodePacked(r3, s3, v3));
+
+        assertTrue(trading.orderNonces(CAIP10_WALLET_USER1, nonce1));
+        assertTrue(trading.orderNonces(CAIP10_WALLET_USER1, nonce2));
+        assertTrue(trading.orderNonces(CAIP10_WALLET_USER1, nonce3));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // FUZZ TESTS - MULTI-USER SCENARIOS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testFuzzMultiUserIsolation(uint128 amount1, uint128 amount2, uint128 amount3) public {
+        // Test that different users' balances are isolated
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount1, Trading.ActionIs.OTHER_CHAIN, user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER2, amount2, Trading.ActionIs.OTHER_CHAIN, user2);
+
+        // Add to user1 again
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount3, Trading.ActionIs.OTHER_CHAIN, user1);
+
+        (, uint256 balance1) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        (, uint256 balance2) = trading.tradeBalance(CAIP10_WALLET_USER2, caip10Token);
+
+        assertEq(balance1, uint256(amount1) + uint256(amount3));
+        assertEq(balance2, amount2);
+    }
+
+    function testFuzzDifferentTokensIsolation(uint128 amount1, uint128 amount2) public {
+        // Create second mock token
+        MockERC20 secondToken = new MockERC20();
+        string memory caip10Token2 =
+            string(abi.encodePacked("eip155:1:", Strings.toHexString(uint160(address(secondToken)), 20)));
+
+        // Deposit to same wallet but different tokens
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount1, Trading.ActionIs.OTHER_CHAIN, user1);
+        trading.deposit(caip10Token2, CAIP10_WALLET_USER1, amount2, Trading.ActionIs.OTHER_CHAIN, user1);
+
+        (, uint256 balance1) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        (, uint256 balance2) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token2);
+
+        assertEq(balance1, amount1);
+        assertEq(balance2, amount2);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // FUZZ TESTS - INVARIANT CHECKS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testFuzzInvariantTotalBalanceConservation(uint128 deposit1, uint128 deposit2, uint64 withdraw) public {
+        vm.assume(withdraw <= deposit1);
+
+        // Setup two users
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, deposit1, Trading.ActionIs.OTHER_CHAIN, owner);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER2, deposit2, Trading.ActionIs.OTHER_CHAIN, user2);
+
+        uint256 totalBefore = uint256(deposit1) + uint256(deposit2);
+
+        // Withdraw from user1
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdraw, Trading.ActionIs.OTHER_CHAIN);
+
+        (, uint256 balance1) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        (, uint256 balance2) = trading.tradeBalance(CAIP10_WALLET_USER2, caip10Token);
+
+        assertEq(balance1 + balance2, totalBefore - withdraw);
+    }
+
+    function testFuzzNoUnderflowOnWithdraw(uint128 balance, uint128 withdraw) public {
+        vm.assume(withdraw <= balance);
+
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, balance, Trading.ActionIs.OTHER_CHAIN, owner);
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdraw, Trading.ActionIs.OTHER_CHAIN);
+
+        (, uint256 remainingBalance) = trading.tradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(remainingBalance, uint256(balance) - uint256(withdraw));
+        assertTrue(remainingBalance <= balance); // No overflow
     }
 }
