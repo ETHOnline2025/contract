@@ -265,7 +265,7 @@ contract Evvm is EvvmStorage {
         if (Caip10Utils.isEvmCaip10(caip10Id)) {
             // EVM chain: Extract the actual Ethereum address
             mappedAddress = Caip10Utils.extractAddress(caip10Id);
-            
+
             // Security: For EVM chains, only the actual address owner can register
             if (mappedAddress != msg.sender) {
                 revert ErrorsLib.Caip10EvmAddressMismatch();
@@ -273,7 +273,7 @@ contract Evvm is EvvmStorage {
         } else {
             // Non-EVM chain: Generate a synthetic EVM address deterministically
             mappedAddress = _generateSyntheticAddress(caip10Id);
-            
+
             // Store the synthetic address mapping
             nonEvmToSyntheticAddress[caip10Id] = mappedAddress;
         }

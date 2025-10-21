@@ -59,9 +59,7 @@ contract TradingTest is Test, EvvmStructs {
         mockToken = new MockERC20();
 
         // Setup CAIP-10 token identifier
-        caip10Token = string(
-            abi.encodePacked("eip155:1:", Strings.toHexString(uint160(address(mockToken)), 20))
-        );
+        caip10Token = string(abi.encodePacked("eip155:1:", Strings.toHexString(uint160(address(mockToken)), 20)));
 
         // Create a different token for principal token (MATE)
         MockERC20 principalToken = new MockERC20();
@@ -356,7 +354,9 @@ contract TradingTest is Test, EvvmStructs {
         trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, user1);
 
         vm.expectRevert(
-            abi.encodeWithSelector(Trading.CANT_WITHDRAW_MORE_THAN_ACCOUNT_HAVE.selector, 100 * 10 ** 18, 150 * 10 ** 18)
+            abi.encodeWithSelector(
+                Trading.CANT_WITHDRAW_MORE_THAN_ACCOUNT_HAVE.selector, 100 * 10 ** 18, 150 * 10 ** 18
+            )
         );
         trading.withdraw(caip10Token, CAIP10_WALLET_USER1, 150 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN);
     }
@@ -460,7 +460,8 @@ contract TradingTest is Test, EvvmStructs {
     }
 
     function testWithdrawZeroAmountOtherChain() public {
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, user1);
+        // Deposit with owner as depositor for OTHER_CHAIN withdrawals
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, owner);
 
         // Withdraw zero amount in OTHER_CHAIN mode (no treasury interaction)
         trading.withdraw(caip10Token, CAIP10_WALLET_USER1, 0, Trading.ActionIs.OTHER_CHAIN);

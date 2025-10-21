@@ -153,7 +153,6 @@ contract TreasuryCaip10Test is Test {
         assertEq(user1.balance, withdrawAmount);
     }
 
-
     function testFuzzDepositWithdrawCaip10(uint256 amount) public {
         vm.assume(amount > 0 && amount <= 1000 * 10 ** 18);
 

@@ -7,7 +7,7 @@ pragma solidity ^0.8.29;
  * @author EVVM Team
  * @notice Chain-agnostic utility library for CAIP-10 identifier parsing and validation
  * @dev Provides comprehensive support for CAIP-10 account identifiers across multiple blockchain namespaces
- * 
+ *
  * CAIP-10 Format: namespace:chainId:accountAddress
  * Examples:
  * - EVM: "eip155:1:0x1234567890123456789012345678901234567890"
@@ -25,13 +25,13 @@ library Caip10Utils {
 
     /// @notice Thrown when CAIP-10 format is invalid or malformed
     error InvalidCaip10Format();
-    
+
     /// @notice Thrown when chain namespace is not recognized or supported
     error InvalidChainNamespace();
-    
+
     /// @notice Thrown when address format doesn't match expected format for the chain
     error InvalidAddress();
-    
+
     /// @notice Thrown when attempting EVM-specific operations on non-EVM chains
     error NotEvmChain();
 
@@ -121,10 +121,10 @@ library Caip10Utils {
      */
     function extractAddress(string memory caip10) internal pure returns (address) {
         (string memory namespace,, string memory accountAddress) = parseCaip10(caip10);
-        
+
         // Verify this is an EVM chain
         if (!isEvmNamespace(namespace)) revert NotEvmChain();
-        
+
         return parseEvmAddress(accountAddress);
     }
 

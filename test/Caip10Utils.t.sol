@@ -7,8 +7,7 @@ import {Caip10Utils} from "@EVVM/testnet/lib/Caip10Utils.sol";
 contract Caip10UtilsTest is Test {
     function testParseCaip10Valid() public {
         string memory caip10 = "eip155:1:0xab16a96D359eC26a11e2C2b3d8f8B8942d5Bfcdb";
-        (string memory namespace, string memory chainId, string memory accountAddress) =
-            Caip10Utils.parseCaip10(caip10);
+        (string memory namespace, string memory chainId, string memory accountAddress) = Caip10Utils.parseCaip10(caip10);
 
         assertEq(namespace, "eip155");
         assertEq(chainId, "1");
@@ -17,8 +16,7 @@ contract Caip10UtilsTest is Test {
 
     function testParseCaip10Arbitrum() public {
         string memory caip10 = "eip155:42161:0x1234567890123456789012345678901234567890";
-        (string memory namespace, string memory chainId, string memory accountAddress) =
-            Caip10Utils.parseCaip10(caip10);
+        (string memory namespace, string memory chainId, string memory accountAddress) = Caip10Utils.parseCaip10(caip10);
 
         assertEq(namespace, "eip155");
         assertEq(chainId, "42161");
@@ -63,7 +61,6 @@ contract Caip10UtilsTest is Test {
 
         assertEq(parsed, 0xab16a96D359eC26a11e2C2b3d8f8B8942d5Bfcdb);
     }
-
 
     function testToCaip10() public {
         address account = 0xab16a96D359eC26a11e2C2b3d8f8B8942d5Bfcdb;
