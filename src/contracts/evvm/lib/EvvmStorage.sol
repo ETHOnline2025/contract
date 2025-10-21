@@ -29,6 +29,9 @@ abstract contract EvvmStorage is EvvmStructs {
 
     address treasuryAddress;
 
+    /// @notice Address of the authorized trading contract that can modify balances
+    address authorizedTradingContract;
+
     address whitelistTokenToBeAdded_address;
     address whitelistTokenToBeAdded_pool;
     uint256 whitelistTokenToBeAdded_dateToSet;
@@ -52,6 +55,11 @@ abstract contract EvvmStorage is EvvmStructs {
 
     mapping(address => bytes1) stakerList;
 
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
+    // EVM NATIVE BALANCES (for EVM-to-EVM operations)
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
+
+    /// @notice EVM-native balance storage for address-based operations
     mapping(address user => mapping(address token => uint256 quantity)) balances;
 
     mapping(address user => uint256 nonce) nextSyncUsedNonce;
@@ -61,7 +69,31 @@ abstract contract EvvmStorage is EvvmStructs {
     mapping(address user => uint256 nonce) nextFisherDepositNonce;
 
     // ═════════════════════════════════════════════════════════════════════════════════════════════
-    // CAIP-10 ABSTRACTION LAYER STORAGE
+    // CAIP-10 NATIVE BALANCES (for chain-agnostic operations)
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Chain-agnostic balance storage using raw CAIP-10 identifiers
+     * @dev Parallel balance system to EVM balances for non-EVM chain support
+     *      Example: caip10Balances["cosmos:cosmoshub-4:cosmos1abc"]["cosmos:cosmoshub-4:uatom"] = 1000
+     *      This is separate from the EVM address-based balances system
+     */
+    mapping(string caip10User => mapping(string caip10Token => uint256 quantity)) caip10Balances;
+
+    /**
+     * @notice Nonce tracking for CAIP-10 identified users (synchronous)
+     * @dev Parallel to nextSyncUsedNonce for chain-agnostic operations
+     */
+    mapping(string caip10User => uint256 nonce) caip10NextSyncUsedNonce;
+
+    /**
+     * @notice Nonce tracking for CAIP-10 identified users (asynchronous)
+     * @dev Parallel to asyncUsedNonce for chain-agnostic operations
+     */
+    mapping(string caip10User => mapping(uint256 nonce => bool isUsed)) caip10AsyncUsedNonce;
+
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
+    // CAIP-10 IDENTITY MAPPING LAYER (for EVM interoperability)
     // ═════════════════════════════════════════════════════════════════════════════════════════════
 
     /**

@@ -1104,25 +1104,144 @@ contract Evvm is EvvmStorage {
         return asyncUsedNonce[user][nonce];
     }
 
+    //░▒▓█ CAIP-10 Native Balance Functions ██████████████████████████████████████████▓▒░
+
+    /**
+     * @notice Adds balance using raw CAIP-10 identifiers (chain-agnostic)
+     * @dev Operates on the CAIP-10 native balance storage without converting to addresses
+     *
+     * Chain-Agnostic Balance Management:
+     * - Accepts CAIP-10 identifiers for both user and token
+     * - Stores balances using string keys (no address conversion)
+     * - Supports ALL blockchain namespaces (Cosmos, Bitcoin, Solana, etc.)
+     * - Completely separate from EVM address-based balances
+     *
+     * Use Cases:
+     * - Cosmos user depositing Cosmos tokens
+     * - Bitcoin user receiving Bitcoin-based assets
+     * - Solana user holding Solana tokens
+     * - Any non-EVM chain interaction
+     *
+     * Access Control:
+     * - Only treasury or authorized trading contract can call
+     * - Same authorization model as address-based functions
+     *
+     * @param caip10User CAIP-10 identifier of the user (e.g., "cosmos:cosmoshub-4:cosmos1abc...")
+     * @param caip10Token CAIP-10 identifier of the token (e.g., "cosmos:cosmoshub-4:uatom")
+     * @param amount Amount to add to the balance
+     *
+     * @custom:chain-agnostic Works with any CAIP-10 namespace, not just EVM
+     */
+    function addAmountToUserCaip10(string memory caip10User, string memory caip10Token, uint256 amount) external {
+        if (msg.sender != treasuryAddress && msg.sender != authorizedTradingContract) {
+            revert ErrorsLib.SenderIsNotTreasury();
+        }
+
+        caip10Balances[caip10User][caip10Token] += amount;
+    }
+
+    /**
+     * @notice Removes balance using raw CAIP-10 identifiers (chain-agnostic)
+     * @dev Operates on the CAIP-10 native balance storage without converting to addresses
+     *
+     * Chain-Agnostic Balance Management:
+     * - Accepts CAIP-10 identifiers for both user and token
+     * - Modifies balances using string keys (no address conversion)
+     * - Supports ALL blockchain namespaces
+     * - Completely separate from EVM address-based balances
+     *
+     * Use Cases:
+     * - Cosmos user withdrawing Cosmos tokens
+     * - Bitcoin user sending Bitcoin-based assets
+     * - Cross-chain balance debits
+     * - Any non-EVM chain interaction
+     *
+     * Security:
+     * - No underflow protection - caller must validate sufficient balance
+     * - Caller (trading/treasury) should check balance before calling
+     *
+     * @param caip10User CAIP-10 identifier of the user
+     * @param caip10Token CAIP-10 identifier of the token
+     * @param amount Amount to remove from the balance
+     *
+     * @custom:chain-agnostic Works with any CAIP-10 namespace, not just EVM
+     */
+    function removeAmountFromUserCaip10(string memory caip10User, string memory caip10Token, uint256 amount) external {
+        if (msg.sender != treasuryAddress && msg.sender != authorizedTradingContract) {
+            revert ErrorsLib.SenderIsNotTreasury();
+        }
+
+        caip10Balances[caip10User][caip10Token] -= amount;
+    }
+
+    /**
+     * @notice Gets balance using raw CAIP-10 identifiers (chain-agnostic)
+     * @dev Queries the CAIP-10 native balance storage directly
+     *
+     * Chain-Agnostic Balance Query:
+     * - Returns balance for any chain's user and token
+     * - Works with Cosmos, Bitcoin, Solana, and all other chains
+     * - No conversion to addresses needed
+     * - Direct string-based lookup
+     *
+     * @param caip10User CAIP-10 identifier of the user
+     * @param caip10Token CAIP-10 identifier of the token
+     * @return The balance amount in the token's base unit
+     *
+     * @custom:chain-agnostic Works with any CAIP-10 namespace
+     */
+    function getBalanceCaip10Native(string memory caip10User, string memory caip10Token)
+        external
+        view
+        returns (uint256)
+    {
+        return caip10Balances[caip10User][caip10Token];
+    }
+
+    /**
+     * @notice Gets synchronous nonce for a CAIP-10 user
+     * @dev Chain-agnostic nonce tracking using CAIP-10 identifier
+     *
+     * @param caip10User CAIP-10 identifier of the user
+     * @return The next synchronous nonce value
+     */
+    function getNextSyncNonceCaip10Native(string memory caip10User) external view returns (uint256) {
+        return caip10NextSyncUsedNonce[caip10User];
+    }
+
+    /**
+     * @notice Checks if async nonce has been used for a CAIP-10 user
+     * @dev Chain-agnostic nonce status using CAIP-10 identifier
+     *
+     * @param caip10User CAIP-10 identifier of the user
+     * @param nonce The nonce value to check
+     * @return True if nonce has been used, false otherwise
+     */
+    function getIfUsedAsyncNonceCaip10Native(string memory caip10User, uint256 nonce) external view returns (bool) {
+        return caip10AsyncUsedNonce[caip10User][nonce];
+    }
+
     //░▒▓█Treasury exclusive functions██████████████████████████████████████████▓▒░
 
     /**
      * @notice Adds tokens to a user's balance in the EVVM system
-     * @dev Restricted function that can only be called by the authorized treasury contract
+     * @dev Restricted function that can only be called by authorized contracts (treasury or trading)
      *
-     * Treasury Operations:
+     * Authorized Operations:
      * - Allows treasury to mint or credit tokens to user accounts
+     * - Allows trading contract to credit balances for cross-chain deposits
      * - Used for reward distributions, airdrops, or token bridging
      * - Direct balance manipulation bypasses normal transfer restrictions
-     * - No signature verification required (treasury authorization)
+     * - No signature verification required (contract authorization)
      *
      * Access Control:
-     * - Only the registered treasury contract can call this function
+     * - Only the registered treasury contract OR authorized trading contract can call this
      * - Reverts with SenderIsNotTreasury error for unauthorized callers
      * - Provides centralized token distribution mechanism
      *
      * Use Cases:
      * - Cross-chain bridge token minting
+     * - Cross-chain trading deposits
      * - Administrative reward distributions
      * - System-level token allocations
      * - Emergency balance corrections
@@ -1131,11 +1250,11 @@ contract Evvm is EvvmStorage {
      * @param token Address of the token contract to add balance for
      * @param amount Amount of tokens to add to the user's balance
      *
-     * @custom:access-control Only treasury contract
+     * @custom:access-control Only treasury or authorized trading contract
      * @custom:security No overflow protection needed due to controlled access
      */
     function addAmountToUser(address user, address token, uint256 amount) external {
-        if (msg.sender != treasuryAddress) {
+        if (msg.sender != treasuryAddress && msg.sender != authorizedTradingContract) {
             revert ErrorsLib.SenderIsNotTreasury();
         }
 
@@ -1144,39 +1263,41 @@ contract Evvm is EvvmStorage {
 
     /**
      * @notice Removes tokens from a user's balance in the EVVM system
-     * @dev Restricted function that can only be called by the authorized treasury contract
+     * @dev Restricted function that can only be called by authorized contracts (treasury or trading)
      *
-     * Treasury Operations:
+     * Authorized Operations:
      * - Allows treasury to burn or debit tokens from user accounts
+     * - Allows trading contract to debit balances for cross-chain withdrawals
      * - Used for cross-chain bridging, penalties, or system corrections
      * - Direct balance manipulation bypasses normal transfer protections
      * - Can potentially create negative balances if not carefully managed
      *
      * Access Control:
-     * - Only the registered treasury contract can call this function
+     * - Only the registered treasury contract OR authorized trading contract can call this
      * - Reverts with SenderIsNotTreasury error for unauthorized callers
      * - Provides centralized token withdrawal mechanism
      *
      * Use Cases:
      * - Cross-chain bridge token burning
+     * - Cross-chain trading withdrawals
      * - Administrative penalty applications
      * - System-level token reclamations
      * - Emergency balance corrections
      *
      * Security Considerations:
-     * - No underflow protection: treasury must ensure sufficient balance
+     * - No underflow protection: caller must ensure sufficient balance
      * - Can result in unexpected negative balances if misused
-     * - Treasury contract should implement additional validation
+     * - Calling contract should implement additional validation
      *
      * @param user Address of the user to remove tokens from
      * @param token Address of the token contract to remove balance for
      * @param amount Amount of tokens to remove from the user's balance
      *
-     * @custom:access-control Only treasury contract
-     * @custom:security No underflow protection - treasury responsibility
+     * @custom:access-control Only treasury or authorized trading contract
+     * @custom:security No underflow protection - caller responsibility
      */
     function removeAmountFromUser(address user, address token, uint256 amount) external {
-        if (msg.sender != treasuryAddress) {
+        if (msg.sender != treasuryAddress && msg.sender != authorizedTradingContract) {
             revert ErrorsLib.SenderIsNotTreasury();
         }
 
@@ -1297,6 +1418,24 @@ contract Evvm is EvvmStorage {
      */
     function setNameServiceAddress(address _nameServiceAddress) external onlyAdmin {
         nameServiceAddress = _nameServiceAddress;
+    }
+
+    /**
+     * @notice Sets the authorized trading contract that can modify EVVM balances
+     * @dev Allows admin to authorize a trading contract for cross-chain balance operations
+     *
+     * Authorization Purpose:
+     * - Trading contracts need to credit/debit balances for cross-chain operations
+     * - Only one trading contract can be authorized at a time
+     * - Used for OTHER_CHAIN mode deposits and withdrawals
+     *
+     * @param _tradingContract Address of the trading contract to authorize
+     *
+     * @custom:access-control Admin only
+     * @custom:security Only authorize trusted trading contracts
+     */
+    function setAuthorizedTradingContract(address _tradingContract) external onlyAdmin {
+        authorizedTradingContract = _tradingContract;
     }
 
     //█ Admin Management Functions ███████████████████████████████████████████████
