@@ -2,6 +2,9 @@
   "lib/LayerZero-v2": {
     "rev": "4645b5795185a196713263311f76a497a3267dcc"
   },
+  "lib/Testnet-Contracts": {
+    "rev": "f98db8be2347bb8e941e4102b8b51557a0fd9d0e"
+  },
   "lib/axelar-gmp-sdk-solidity": {
     "tag": {
       "name": "v6.0.6",
@@ -10,6 +13,12 @@
   },
   "lib/devtools": {
     "rev": "5268e9c0c70106a9b74ceaf519ffaa41d8b503ec"
+  },
+  "lib/forge-std": {
+    "rev": "b8f065fda83b8cd94a6b2fec8fcd911dc3b444fd"
+  },
+  "lib/openzeppelin-contracts": {
+    "rev": "c64a1edb67b6e3f4a15cca8909c9482ad33a02b0"
   },
   "lib/openzeppelin-contracts-upgradeable": {
     "tag": {

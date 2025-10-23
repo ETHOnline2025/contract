@@ -9,6 +9,7 @@ import {NameService} from "@EVVM/testnet/contracts/nameService/NameService.sol";
 import {EvvmStructs} from "@EVVM/testnet/contracts/evvm/lib/EvvmStructs.sol";
 import {Treasury} from "@EVVM/testnet/contracts/treasury/Treasury.sol";
 import {Trading} from "@EVVM/testnet/contracts/trading/Trading.sol";
+import {MockToken} from "@EVVM/testnet/contracts/token/MockToken.sol";
 
 contract DeployTestnetOnAnvil is Script {
     Staking sMate;
@@ -17,6 +18,7 @@ contract DeployTestnetOnAnvil is Script {
     NameService nameService;
     Treasury treasury;
     Trading trading;
+    MockToken mockToken;
 
     struct AddressData {
         address activator;
@@ -92,6 +94,9 @@ contract DeployTestnetOnAnvil is Script {
 
         // Deploy Trading contract with all required addresses
         trading = new Trading(addressData.admin, address(evvm), address(treasury), address(nameService));
+        mockToken = new MockToken();
+
+        mockToken.mint(address(0x70997970C51812dc3A010C7d01b50e0d17dc79C8), 500000 * 10 ** 18);
 
         // Setup integrations
         sMate._setupEstimatorAndEvvm(address(estimator), address(evvm));
