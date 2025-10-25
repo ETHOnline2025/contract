@@ -23,10 +23,10 @@ Since MVTC's are app chains, we needed our functionality to play well along side
 2. EVVM Naming Service - our contracts are utilizing the EVVM Naming Service which can be used to set the evm withdrawal address.
 3. Discount for EVVM stakers - for the real OGs that are staking on EVVM, they can enjoy 50% off on the fees, which are drawn on withdrawal.
 
-## Flowcharts:
-| Deposit                           | Trading                           |
+## Screenshots:
+| Landing Page                      | Order Book                        |
 | --------------------------------- | --------------------------------- |
-| ![deposit](assets/Deposit.png)    | ![trading](assets/Trading.png)    |
+| ![deposit](assets/Screen1.jpg)    | ![trading](assets/Screen2.jpg)    |
 
 
 ## Diagrams
@@ -50,19 +50,16 @@ Our whole system is deeply integrated into the EVVM, and we've included function
 
 ## Links
 
-- [Devfolio](https://devfolio.co/projects/sloth-shaming-bea7)
+- [Github](https://github.com/ETHOnline2025)
 - [Vercel](https://sloths-warsaw.vercel.app/)
-- [Github](https://github.com/warsaw-hackers/Sloth-Shaming)
+- [Eth Global Submission](https://devfolio.co/projects/sloth-shaming-bea7)
 
-### Deployments
-- [Deployment Celo](https://explorer.celo.org/alfajores/address/0x81afFbf9392a1402B44B8b6C45C89F602657b3eF)
-- [Deployment Sei](https://seitrace.com/address/0xF519289Ed67326514c6Eb47851f9e605DC8ad640?chain=pacific-1)
-- [Deployment Zircuit](https://explorer.testnet.zircuit.com/address/0x81afFbf9392a1402B44B8b6C45C89F602657b3eF)
-- [Deployment Mantle](https://explorer.sepolia.mantle.xyz/address/0xF519289Ed67326514c6Eb47851f9e605DC8ad640?tab=txs)
-- [Deployment Optimism](https://sepolia-optimism.etherscan.io/address/0xBf8C8Ef202C8D14f8657f6E476c0F115906c773D)
-
-
-
+### Deployments Base sepolia
+- [Trading](https://sepolia.basescan.org/address/0x55555edf4395f6ca0b2385568ccae1fb738d3650)
+- [EVVM](https://sepolia.basescan.org/address/0xa25d6b39e757ace76840ac7a4bc6f7356de70224)
+- [Staking](https://sepolia.basescan.org/address/0xd4454caa1ac67072199e55439f7beba87aa4a4f7)
+- [NameService](https://sepolia.basescan.org/address/0x0ca5d9906e6da8d05aca2caf6ce8b8a5ed413cb2)
+- [Treasury](https://sepolia.basescan.org/address/0x2d2ebbd9863631da6f0aa87f844f37e8b96e3323)
 
 ## Team
 
