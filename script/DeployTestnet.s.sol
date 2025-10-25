@@ -51,74 +51,51 @@ contract DeployTestnet is Script {
         data = vm.readFile(path);
         dataJson = vm.parseJson(data);
 
-        BasicMetadata memory basicMetadata = abi.decode(
-            dataJson,
-            (BasicMetadata)
-        );
+        BasicMetadata memory basicMetadata = abi.decode(dataJson, (BasicMetadata));
 
         path = "input/evvmAdvancedMetadata.json";
         assert(vm.isFile(path));
         data = vm.readFile(path);
         dataJson = vm.parseJson(data);
 
-        AdvancedMetadata memory advancedMetadata = abi.decode(
-            dataJson,
-            (AdvancedMetadata)
-        );
+        AdvancedMetadata memory advancedMetadata = abi.decode(dataJson, (AdvancedMetadata));
 
         console2.log("Admin:", addressData.admin);
         console2.log("GoldenFisher:", addressData.goldenFisher);
         console2.log("Activator:", addressData.activator);
         console2.log("EvvmName:", basicMetadata.EvvmName);
         console2.log("PrincipalTokenName:", basicMetadata.principalTokenName);
-        console2.log(
-            "PrincipalTokenSymbol:",
-            basicMetadata.principalTokenSymbol
-        );
+        console2.log("PrincipalTokenSymbol:", basicMetadata.principalTokenSymbol);
         console2.log("TotalSupply:", advancedMetadata.totalSupply);
         console2.log("EraTokens:", advancedMetadata.eraTokens);
         console2.log("Reward:", advancedMetadata.reward);
 
-        EvvmStructs.EvvmMetadata memory inputMetadata = EvvmStructs
-            .EvvmMetadata({
-                EvvmName: basicMetadata.EvvmName,
-                EvvmID: 0,
-                ///@dev dont change the EvvmID unless you know what you are doing
-                principalTokenName: basicMetadata.principalTokenName,
-                principalTokenSymbol: basicMetadata.principalTokenSymbol,
-                principalTokenAddress: 0x0000000000000000000000000000000000000001,
-                totalSupply: advancedMetadata.totalSupply,
-                eraTokens: advancedMetadata.eraTokens,
-                reward: advancedMetadata.reward
-            });
+        EvvmStructs.EvvmMetadata memory inputMetadata = EvvmStructs.EvvmMetadata({
+            EvvmName: basicMetadata.EvvmName,
+            EvvmID: 0,
+            ///@dev dont change the EvvmID unless you know what you are doing
+            principalTokenName: basicMetadata.principalTokenName,
+            principalTokenSymbol: basicMetadata.principalTokenSymbol,
+            principalTokenAddress: 0x0000000000000000000000000000000000000001,
+            totalSupply: advancedMetadata.totalSupply,
+            eraTokens: advancedMetadata.eraTokens,
+            reward: advancedMetadata.reward
+        });
 
         vm.startBroadcast();
 
         sMate = new Staking(addressData.admin, addressData.goldenFisher);
         evvm = new Evvm(addressData.admin, address(sMate), inputMetadata);
-        estimator = new Estimator(
-            addressData.activator,
-            address(evvm),
-            address(sMate),
-            addressData.admin
-        );
+        estimator = new Estimator(addressData.activator, address(evvm), address(sMate), addressData.admin);
         nameService = new NameService(address(evvm), addressData.admin);
         treasury = new Treasury(address(evvm));
 
         // Deploy Trading contract with all required addresses
-        trading = new Trading(
-            addressData.admin,
-            address(evvm),
-            address(treasury),
-            address(nameService)
-        );
+        trading = new Trading(addressData.admin, address(evvm), address(treasury), address(nameService));
 
         // Setup integrations
         sMate._setupEstimatorAndEvvm(address(estimator), address(evvm));
-        evvm._setupNameServiceAndTreasuryAddress(
-            address(nameService),
-            address(treasury)
-        );
+        evvm._setupNameServiceAndTreasuryAddress(address(nameService), address(treasury));
 
         // Authorize Trading contract to modify EVVM balances
         evvm.setAuthorizedTradingContract(address(trading));

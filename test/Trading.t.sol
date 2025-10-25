@@ -180,7 +180,7 @@ contract TradingTest is Test, EvvmStructs {
         addrs[1] = address(0xabCDEF1234567890ABcDEF1234567890aBCDeF12);
         addrs[2] = address(0);
 
-        for (uint i = 0; i < addrs.length; i++) {
+        for (uint256 i = 0; i < addrs.length; i++) {
             string memory addrStr = addressToString(addrs[i]);
             address parsed = trading.parseAddressExternal(addrStr);
             assertEq(parsed, addrs[i]);
@@ -1048,43 +1048,22 @@ contract TradingTest is Test, EvvmStructs {
     // HELPER FUNCTIONS FOR EXECUTOR TESTS
     // ═══════════════════════════════════════════════════════════════════════════════════
 
-    function createWithdrawalSignature(
-        uint256 privateKey,
-        string memory token,
-        uint256 amount,
-        uint256 nonce
-    ) internal view returns (bytes memory) {
+    function createWithdrawalSignature(uint256 privateKey, string memory token, uint256 amount, uint256 nonce)
+        internal
+        view
+        returns (bytes memory)
+    {
         uint256 evvmID = evvm.getEvvmID();
 
-        string memory message = string.concat(
-            token,
-            ",",
-            Strings.toString(amount),
-            ",",
-            Strings.toString(nonce)
-        );
+        string memory message = string.concat(token, ",", Strings.toString(amount), ",", Strings.toString(nonce));
 
         bytes32 messageHash = keccak256(
             abi.encodePacked(
                 "\x19Ethereum Signed Message:\n",
                 Strings.toString(
-                    bytes(
-                        string.concat(
-                            Strings.toString(evvmID),
-                            ",",
-                            "withdrawWithExecutor",
-                            ",",
-                            message
-                        )
-                    ).length
+                    bytes(string.concat(Strings.toString(evvmID), ",", "withdrawWithExecutor", ",", message)).length
                 ),
-                string.concat(
-                    Strings.toString(evvmID),
-                    ",",
-                    "withdrawWithExecutor",
-                    ",",
-                    message
-                )
+                string.concat(Strings.toString(evvmID), ",", "withdrawWithExecutor", ",", message)
             )
         );
 
