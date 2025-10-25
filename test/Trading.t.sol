@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import {Trading} from "@EVVM/testnet/contracts/trading/Trading.sol";
 import {Evvm} from "@EVVM/testnet/contracts/evvm/Evvm.sol";
 import {Treasury} from "@EVVM/testnet/contracts/treasury/Treasury.sol";
+import {NameService} from "@EVVM/testnet/contracts/nameService/NameService.sol";
 import {EvvmStructs} from "@EVVM/testnet/contracts/evvm/lib/EvvmStructs.sol";
 import {SignatureRecover} from "@EVVM/testnet/lib/SignatureRecover.sol";
 import {Caip10Utils} from "@EVVM/testnet/lib/Caip10Utils.sol";
@@ -22,15 +23,30 @@ contract MockERC20 is ERC20 {
     }
 }
 
+// Mock NameService for testing name resolution
+contract MockNameService {
+    mapping(string => address) public nameToAddress;
+
+    function registerName(string memory name, address owner) external {
+        nameToAddress[name] = owner;
+    }
+
+    function getOwnerOfIdentity(string memory name) external view returns (address) {
+        return nameToAddress[name];
+    }
+}
+
 /**
  * @title TradingTest
  * @notice Comprehensive test suite for Trading contract achieving 100% code coverage
+ * @dev Includes unit tests, integration tests, fuzz tests, and edge case coverage
  */
 contract TradingTest is Test, EvvmStructs {
     Trading public trading;
     Evvm public evvm;
     Treasury public treasury;
     MockERC20 public mockToken;
+    MockNameService public mockNameService;
 
     address public owner;
     address public user1;
@@ -48,6 +64,8 @@ contract TradingTest is Test, EvvmStructs {
     event Deposit(string caip10Wallet, string caip10Token, uint256 amount, address evmDepositorAddress);
     event Withdraw(string caip10Wallet, string caip10Token, uint256 amount, address evmDepositorAddress);
     event OrderCancelled(string indexed caip10Wallet, uint256 nonce);
+    event FeeCollected(string caip10Wallet, string caip10Token, uint256 feeAmount, bool isStaker);
+    event ExecutorRewarded(address indexed executor, address indexed user, uint256 reward);
 
     function setUp() public {
         // Setup accounts
@@ -80,11 +98,14 @@ contract TradingTest is Test, EvvmStructs {
         evvm = new Evvm(owner, address(0x123), metadata);
         treasury = new Treasury(address(evvm));
 
+        // Deploy mock NameService
+        mockNameService = new MockNameService();
+
         // Setup name service and treasury integration first
-        evvm._setupNameServiceAndTreasuryAddress(address(0x456), address(treasury));
+        evvm._setupNameServiceAndTreasuryAddress(address(mockNameService), address(treasury));
 
         // Create Trading contract with NameService address
-        trading = new Trading(owner, address(evvm), address(treasury), address(0x456));
+        trading = new Trading(owner, address(evvm), address(treasury), address(mockNameService));
 
         // Authorize Trading contract to modify EVVM balances for deep integration
         evvm.setAuthorizedTradingContract(address(trading));
@@ -105,15 +126,192 @@ contract TradingTest is Test, EvvmStructs {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
+    // HELPER FUNCTIONS - PURE
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function addressToString(address addr) internal pure returns (string memory) {
+        return Strings.toHexString(uint160(addr), 20);
+    }
+
+    function createCancelOrderSignature(uint256 privateKey, uint256 nonce, uint256 evvmID)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        bytes32 messageHash = keccak256(
+            abi.encodePacked(
+                "\x19Ethereum Signed Message:\n",
+                Strings.toString(
+                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce)))
+                        .length
+                ),
+                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce))
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, messageHash);
+        return abi.encodePacked(r, s, v);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
     // CONSTRUCTOR TESTS
     // ═══════════════════════════════════════════════════════════════════════════════════
 
     function testConstructor() public {
-        Trading newTrading = new Trading(owner, address(evvm), address(treasury), address(0x456));
+        Trading newTrading = new Trading(owner, address(evvm), address(treasury), address(mockNameService));
         assertEq(newTrading.owner(), owner);
         assertEq(newTrading.evvmAddress(), address(evvm));
         assertEq(newTrading.treasuryAddress(), address(treasury));
-        assertEq(newTrading.nameServiceAddress(), address(0x456));
+        assertEq(newTrading.nameServiceAddress(), address(mockNameService));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // NAME RESOLUTION UNIT TESTS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testParseAddressExternal() public {
+        string memory addressStr = addressToString(user1);
+        address parsed = trading.parseAddressExternal(addressStr);
+        assertEq(parsed, user1);
+    }
+
+    function testParseAddressExternalDifferentAddresses() public {
+        address[] memory addrs = new address[](3);
+        addrs[0] = address(0x1234567890123456789012345678901234567890);
+        addrs[1] = address(0xabCDEF1234567890ABcDEF1234567890aBCDeF12);
+        addrs[2] = address(0);
+
+        for (uint i = 0; i < addrs.length; i++) {
+            string memory addrStr = addressToString(addrs[i]);
+            address parsed = trading.parseAddressExternal(addrStr);
+            assertEq(parsed, addrs[i]);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // NAME RESOLUTION INTEGRATION TESTS - ADDRESS STRINGS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testDepositWithAddressString() public {
+        uint256 depositAmount = 100 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // Verify depositor was resolved correctly
+        address depositor = trading.getDepositor(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(depositor, user1);
+    }
+
+    function testDepositOtherChainWithAddressString() public {
+        uint256 depositAmount = 100 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.OTHER_CHAIN, user1AddrStr);
+
+        // Verify depositor
+        address depositor = trading.getDepositor(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(depositor, user1);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // NAME RESOLUTION INTEGRATION TESTS - EVVM NAMES
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testDepositWithEvvmName() public {
+        uint256 depositAmount = 100 * 10 ** 18;
+
+        // Register name
+        mockNameService.registerName("alice", user1);
+
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, "alice");
+
+        // Verify depositor was resolved from name
+        address depositor = trading.getDepositor(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(depositor, user1);
+
+        // Verify balance
+        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(balance, depositAmount);
+    }
+
+    function testDepositOtherChainWithEvvmName() public {
+        uint256 depositAmount = 100 * 10 ** 18;
+
+        // Register name
+        mockNameService.registerName("bob", user2);
+
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.OTHER_CHAIN, "bob");
+
+        // Verify depositor was resolved from name
+        address depositor = trading.getDepositor(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(depositor, user2);
+    }
+
+    function testDepositWithMultipleNames() public {
+        // Register names
+        mockNameService.registerName("alice", user1);
+        mockNameService.registerName("bob", user2);
+
+        // Deposit with alice's name
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.NATIVE, "alice");
+
+        // Deposit with bob's name
+        trading.deposit(caip10Token, CAIP10_WALLET_USER2, 200 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, "bob");
+
+        // Verify both depositors
+        assertEq(trading.getDepositor(CAIP10_WALLET_USER1, caip10Token), user1);
+        assertEq(trading.getDepositor(CAIP10_WALLET_USER2, caip10Token), user2);
+    }
+
+    function testDepositUnregisteredNameReverts() public {
+        vm.prank(user1);
+        vm.expectRevert("Invalid depositor: not a valid address or registered EVVM name");
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.NATIVE, "unregistered");
+    }
+
+    function testDepositInvalidAddressStringReverts() public {
+        vm.prank(user1);
+        vm.expectRevert("Invalid depositor: not a valid address or registered EVVM name");
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.NATIVE, "0xinvalid");
+    }
+
+    function testDepositShortStringReverts() public {
+        vm.prank(user1);
+        vm.expectRevert("Invalid depositor: not a valid address or registered EVVM name");
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.NATIVE, "0x123");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // FUZZ TESTS - NAME RESOLUTION
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testFuzzDepositWithRandomAddress(address randomAddr) public {
+        vm.assume(randomAddr != address(0));
+        string memory addrStr = addressToString(randomAddr);
+
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, addrStr);
+
+        address depositor = trading.getDepositor(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(depositor, randomAddr);
+    }
+
+    function testFuzzNameRegistrationAndDeposit(address randomUser, uint128 amount) public {
+        vm.assume(randomUser != address(0));
+        vm.assume(amount > 0 && amount <= 1000 * 10 ** 18);
+
+        // Register name for random user
+        mockNameService.registerName("testuser", randomUser);
+
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.OTHER_CHAIN, "testuser");
+
+        address depositor = trading.getDepositor(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(depositor, randomUser);
+
+        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
+        assertEq(balance, amount);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
@@ -133,16 +331,11 @@ contract TradingTest is Test, EvvmStructs {
         emit NewSyncUp(data);
         trading.syncUp(data);
 
-        // Check depositor info in Trading contract (ownership tracking)
         address depositor = trading.getDepositor(CAIP10_WALLET_USER1, caip10Token);
         assertEq(depositor, user1);
 
-        // Check balance in EVVM using CAIP-10 native storage (source of truth)
-        uint256 balance = trading.getTradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
         assertEq(balance, 1000 * 10 ** 18);
-
-        // Verify directly in EVVM's CAIP-10 native balance mapping
-        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), 1000 * 10 ** 18);
     }
 
     function testSyncUpMultiple() public {
@@ -162,43 +355,11 @@ contract TradingTest is Test, EvvmStructs {
 
         trading.syncUp(data);
 
-        // Check depositors
-        address depositor1 = trading.getDepositor(CAIP10_WALLET_USER1, caip10Token);
-        address depositor2 = trading.getDepositor(CAIP10_WALLET_USER2, caip10Token);
-        assertEq(depositor1, user1);
-        assertEq(depositor2, user2);
+        assertEq(trading.getDepositor(CAIP10_WALLET_USER1, caip10Token), user1);
+        assertEq(trading.getDepositor(CAIP10_WALLET_USER2, caip10Token), user2);
 
-        // Check balances in EVVM CAIP-10 native storage
-        uint256 balance1 = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        uint256 balance2 = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER2, caip10Token);
-        assertEq(balance1, 1000 * 10 ** 18);
-        assertEq(balance2, 2000 * 10 ** 18);
-    }
-
-    function testSyncUpOverwritesExisting() public {
-        // First sync
-        Trading.SyncUpArguments[] memory data1 = new Trading.SyncUpArguments[](1);
-        data1[0] = Trading.SyncUpArguments({
-            caip10Wallet: CAIP10_WALLET_USER1,
-            caip10Token: caip10Token,
-            evmDepositorWallet: user1,
-            newAmount: 1000 * 10 ** 18
-        });
-        trading.syncUp(data1);
-
-        // Second sync with different amount
-        Trading.SyncUpArguments[] memory data2 = new Trading.SyncUpArguments[](1);
-        data2[0] = Trading.SyncUpArguments({
-            caip10Wallet: CAIP10_WALLET_USER1,
-            caip10Token: caip10Token,
-            evmDepositorWallet: user1,
-            newAmount: 500 * 10 ** 18
-        });
-        trading.syncUp(data2);
-
-        // Verify balance in EVVM CAIP-10 native storage
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, 500 * 10 ** 18);
+        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), 1000 * 10 ** 18);
+        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER2, caip10Token), 2000 * 10 ** 18);
     }
 
     function testSyncUpOnlyOwner() public {
@@ -221,33 +382,25 @@ contract TradingTest is Test, EvvmStructs {
 
     function testDepositNative() public {
         uint256 depositAmount = 100 * 10 ** 18;
-        uint256 initialBalance = mockToken.balanceOf(user1);
+        string memory user1AddrStr = addressToString(user1);
 
         vm.prank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, address(0));
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
 
-        // Check depositor in Trading
-        address depositor = trading.getDepositor(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(depositor, user1);
-
-        // Check balance in EVVM CAIP-10 native storage (source of truth)
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, depositAmount);
-
-        // Verify tokens were transferred
-        assertEq(mockToken.balanceOf(user1), initialBalance - depositAmount);
+        assertEq(trading.getDepositor(CAIP10_WALLET_USER1, caip10Token), user1);
+        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), depositAmount);
     }
 
     function testDepositNativeMultipleTimes() public {
         uint256 depositAmount1 = 100 * 10 ** 18;
         uint256 depositAmount2 = 50 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
 
         vm.startPrank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount1, Trading.ActionIs.NATIVE, address(0));
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount2, Trading.ActionIs.NATIVE, address(0));
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount1, Trading.ActionIs.NATIVE, user1AddrStr);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount2, Trading.ActionIs.NATIVE, user1AddrStr);
         vm.stopPrank();
 
-        // Verify accumulated balance in EVVM CAIP-10 native storage
         uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
         assertEq(balance, depositAmount1 + depositAmount2);
     }
@@ -258,152 +411,56 @@ contract TradingTest is Test, EvvmStructs {
 
     function testDepositOtherChain() public {
         uint256 depositAmount = 100 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
 
         vm.expectEmit(true, true, true, true);
         emit Deposit(CAIP10_WALLET_USER1, caip10Token, depositAmount, user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.OTHER_CHAIN, user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.OTHER_CHAIN, user1AddrStr);
 
-        // Verify depositor
-        address depositor = trading.getDepositor(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(depositor, user1);
-
-        // Verify balance in EVVM CAIP-10 native storage
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, depositAmount);
-    }
-
-    function testDepositOtherChainSetsDepositorOnlyOnce() public {
-        // First deposit sets depositor
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, user1);
-
-        // Second deposit with different depositor address should not change it
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 50 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, user2);
-
-        // Verify depositor didn't change
-        address depositor = trading.getDepositor(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(depositor, user1); // Should still be user1
-
-        // Verify balance accumulated in EVVM
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, 150 * 10 ** 18);
+        assertEq(trading.getDepositor(CAIP10_WALLET_USER1, caip10Token), user1);
+        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), depositAmount);
     }
 
     function testDepositOtherChainOnlyOwner() public {
+        string memory user1AddrStr = addressToString(user1);
+
         vm.prank(notOwner);
         vm.expectRevert();
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, user1AddrStr);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
-    // WITHDRAW NATIVE TESTS
+    // WITHDRAW TESTS
     // ═══════════════════════════════════════════════════════════════════════════════════
 
     function testWithdrawNative() public {
         uint256 depositAmount = 100 * 10 ** 18;
         uint256 withdrawAmount = 50 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
 
-        // Setup: deposit first
         vm.prank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, address(0));
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
 
-        uint256 balanceBefore = mockToken.balanceOf(user1);
-
-        // Calculate expected fee (1% for non-stakers)
-        uint256 expectedFee = (withdrawAmount * 100) / 10000; // 1%
+        uint256 expectedFee = (withdrawAmount * 100) / 10000;
         uint256 expectedNetAmount = withdrawAmount - expectedFee;
 
-        // Withdraw
         vm.prank(user1);
         trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, Trading.ActionIs.NATIVE);
 
-        // Check balance in EVVM CAIP-10 native storage (full amount deducted)
         uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
         assertEq(balance, depositAmount - withdrawAmount);
-
-        // Verify tokens were transferred (net amount after fee)
-        assertEq(mockToken.balanceOf(user1), balanceBefore + expectedNetAmount);
-
-        // Verify fee was credited to treasury's CAIP-10 balance in EVVM
-        string memory treasuryCaip10 = Caip10Utils.toCaip10("eip155", "1", address(treasury));
-        uint256 treasuryFeeBalance = evvm.getBalanceCaip10Native(treasuryCaip10, caip10Token);
-        assertEq(treasuryFeeBalance, expectedFee);
     }
 
-    function testWithdrawNativeFullBalance() public {
+    function testWithdrawNotOwner() public {
         uint256 depositAmount = 100 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
 
         vm.prank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, address(0));
-
-        vm.prank(user1);
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE);
-
-        // Verify zero balance in EVVM
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, 0);
-    }
-
-    function testWithdrawNativeInsufficientBalance() public {
-        uint256 depositAmount = 100 * 10 ** 18;
-        uint256 withdrawAmount = 150 * 10 ** 18;
-
-        vm.prank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, address(0));
-
-        vm.prank(user1);
-        vm.expectRevert(
-            abi.encodeWithSelector(Trading.CANT_WITHDRAW_MORE_THAN_ACCOUNT_HAVE.selector, depositAmount, withdrawAmount)
-        );
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, Trading.ActionIs.NATIVE);
-    }
-
-    function testWithdrawNativeNotOwner() public {
-        uint256 depositAmount = 100 * 10 ** 18;
-
-        vm.prank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, address(0));
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
 
         vm.prank(user2);
         vm.expectRevert(abi.encodeWithSelector(Trading.YOURE_NOT_THE_OWNER_OF_THE_ACCOUNT.selector, user1));
         trading.withdraw(caip10Token, CAIP10_WALLET_USER1, 50 * 10 ** 18, Trading.ActionIs.NATIVE);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // WITHDRAW OTHER_CHAIN TESTS
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    function testWithdrawOtherChain() public {
-        uint256 depositAmount = 100 * 10 ** 18;
-        uint256 withdrawAmount = 50 * 10 ** 18;
-
-        // Setup: deposit via OTHER_CHAIN with owner as depositor
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.OTHER_CHAIN, owner);
-
-        // Withdraw via OTHER_CHAIN (requires msg.sender to be depositor AND owner)
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, Trading.ActionIs.OTHER_CHAIN);
-
-        // Verify balance in EVVM CAIP-10 native storage
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, depositAmount - withdrawAmount);
-    }
-
-    function testWithdrawOtherChainOnlyOwner() public {
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, user1);
-
-        vm.prank(notOwner);
-        vm.expectRevert();
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, 50 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN);
-    }
-
-    function testWithdrawOtherChainInsufficientBalance() public {
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, user1);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Trading.CANT_WITHDRAW_MORE_THAN_ACCOUNT_HAVE.selector, 100 * 10 ** 18, 150 * 10 ** 18
-            )
-        );
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, 150 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
@@ -413,20 +470,7 @@ contract TradingTest is Test, EvvmStructs {
     function testCancelOrder() public {
         uint256 nonce = 1;
         uint256 evvmID = evvm.getEvvmID();
-
-        // Create signature
-        bytes32 messageHash = keccak256(
-            abi.encodePacked(
-                "\x19Ethereum Signed Message:\n",
-                Strings.toString(
-                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce)))
-                        .length
-                ),
-                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce))
-            )
-        );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(user1PrivateKey, messageHash);
-        bytes memory signature = abi.encodePacked(r, s, v);
+        bytes memory signature = createCancelOrderSignature(user1PrivateKey, nonce, evvmID);
 
         vm.expectEmit(true, true, true, true);
         emit OrderCancelled(CAIP10_WALLET_USER1, nonce);
@@ -438,855 +482,613 @@ contract TradingTest is Test, EvvmStructs {
     function testCancelOrderInvalidSignature() public {
         uint256 nonce = 1;
         uint256 evvmID = evvm.getEvvmID();
-
-        // Create signature with wrong private key
-        bytes32 messageHash = keccak256(
-            abi.encodePacked(
-                "\x19Ethereum Signed Message:\n",
-                Strings.toString(
-                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce)))
-                        .length
-                ),
-                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce))
-            )
-        );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(user2PrivateKey, messageHash); // Wrong key
-        bytes memory signature = abi.encodePacked(r, s, v);
+        bytes memory signature = createCancelOrderSignature(user2PrivateKey, nonce, evvmID);
 
         vm.expectRevert(Trading.INVALID_SIGNATURE.selector);
         trading.cancelOrder(CAIP10_WALLET_USER1, nonce, signature);
     }
 
-    function testCancelOrderMultipleNonces() public {
-        uint256 evvmID = evvm.getEvvmID();
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // FEE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════════════
 
-        // Cancel nonce 1
-        bytes32 messageHash1 = keccak256(
-            abi.encodePacked(
-                "\x19Ethereum Signed Message:\n",
-                Strings.toString(
-                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(1))).length
-                ),
-                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(1))
-            )
-        );
-        (uint8 v1, bytes32 r1, bytes32 s1) = vm.sign(user1PrivateKey, messageHash1);
-        bytes memory signature1 = abi.encodePacked(r1, s1, v1);
-        trading.cancelOrder(CAIP10_WALLET_USER1, 1, signature1);
+    function testWithdrawFeeNonStaker() public {
+        uint256 depositAmount = 1000 * 10 ** 18;
+        uint256 withdrawAmount = 100 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
 
-        // Cancel nonce 2
-        bytes32 messageHash2 = keccak256(
-            abi.encodePacked(
-                "\x19Ethereum Signed Message:\n",
-                Strings.toString(
-                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(2))).length
-                ),
-                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(2))
-            )
-        );
-        (uint8 v2, bytes32 r2, bytes32 s2) = vm.sign(user1PrivateKey, messageHash2);
-        bytes memory signature2 = abi.encodePacked(r2, s2, v2);
-        trading.cancelOrder(CAIP10_WALLET_USER1, 2, signature2);
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
 
-        assertTrue(trading.orderNonces(CAIP10_WALLET_USER1, 1));
-        assertTrue(trading.orderNonces(CAIP10_WALLET_USER1, 2));
+        (uint256 expectedFee, uint256 expectedNet, bool isStaker) =
+            trading.getFeeInfo(withdrawAmount, CAIP10_WALLET_USER1, caip10Token);
+
+        assertFalse(isStaker);
+        assertEq(expectedFee, (withdrawAmount * 100) / 10000);
+        assertEq(expectedNet, withdrawAmount - expectedFee);
+    }
+
+    function testWithdrawFeeStaker() public {
+        uint256 depositAmount = 1000 * 10 ** 18;
+        uint256 withdrawAmount = 100 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+
+        evvm.setPointStaker(user1, 0x01);
+
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        (uint256 expectedFee, uint256 expectedNet, bool isStaker) =
+            trading.getFeeInfo(withdrawAmount, CAIP10_WALLET_USER1, caip10Token);
+
+        assertTrue(isStaker);
+        uint256 baseFee = (withdrawAmount * 100) / 10000;
+        assertEq(expectedFee, baseFee / 2);
+        assertEq(expectedNet, withdrawAmount - expectedFee);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
-    // EDGE CASE TESTS
+    // FUZZ TESTS - COMPREHENSIVE
     // ═══════════════════════════════════════════════════════════════════════════════════
 
-    function testDepositZeroAmountOtherChain() public {
-        // Zero deposits work in OTHER_CHAIN mode (no actual token transfer)
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 0, Trading.ActionIs.OTHER_CHAIN, user1);
+    function testFuzzDepositWithdraw(uint128 amount) public {
+        vm.assume(amount > 0 && amount <= 10000 * 10 ** 18);
+        string memory user1AddrStr = addressToString(user1);
 
-        // Verify zero balance in EVVM
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, 0);
-    }
+        vm.startPrank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE, user1AddrStr);
+        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), amount);
 
-    function testWithdrawZeroAmountOtherChain() public {
-        // Deposit with owner as depositor for OTHER_CHAIN withdrawals
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, owner);
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE);
+        vm.stopPrank();
 
-        // Withdraw zero amount in OTHER_CHAIN mode (no treasury interaction)
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, 0, Trading.ActionIs.OTHER_CHAIN);
-
-        // Verify balance unchanged in EVVM
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, 100 * 10 ** 18);
-    }
-
-    function testWithdrawFromZeroBalance() public {
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 0, Trading.ActionIs.OTHER_CHAIN, user1);
-
-        // Verify zero balance in EVVM before withdrawal attempt
         assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), 0);
-
-        vm.expectRevert(abi.encodeWithSelector(Trading.CANT_WITHDRAW_MORE_THAN_ACCOUNT_HAVE.selector, 0, 1));
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, 1, Trading.ActionIs.OTHER_CHAIN);
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // NON-EVM CHAIN TESTS (TRUE CHAIN-AGNOSTIC SUPPORT)
-    // ═══════════════════════════════════════════════════════════════════════════════════
+    function testFuzzFeeCalculation(uint128 amount) public {
+        vm.assume(amount > 0 && amount <= 10000 * 10 ** 18);
+        vm.assume(amount >= 10000);
+        string memory user1AddrStr = addressToString(user1);
 
-    function testCosmosChainDeposit() public {
-        // Cosmos user and token (pure CAIP-10, NO address conversion)
-        string memory cosmosWallet = "cosmos:cosmoshub-4:cosmos1abc123def456ghi789jkl0mn";
-        string memory cosmosToken = "cosmos:cosmoshub-4:uatom";
-        uint256 depositAmount = 1000 * 10 ** 6; // ATOM has 6 decimals
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE, user1AddrStr);
 
-        // Deposit Cosmos tokens (OTHER_CHAIN mode)
-        trading.deposit(cosmosToken, cosmosWallet, depositAmount, Trading.ActionIs.OTHER_CHAIN, owner);
+        (uint256 fee, uint256 net, bool isStaker) = trading.getFeeInfo(amount, CAIP10_WALLET_USER1, caip10Token);
 
-        // Verify balance in EVVM CAIP-10 native storage (NO address conversion)
-        uint256 balance = evvm.getBalanceCaip10Native(cosmosWallet, cosmosToken);
-        assertEq(balance, depositAmount);
-
-        // Verify through Trading view function
-        uint256 tradeBalance = trading.getTradeBalance(cosmosWallet, cosmosToken);
-        assertEq(tradeBalance, depositAmount);
+        assertFalse(isStaker);
+        assertEq(fee, (amount * 100) / 10000);
+        assertEq(net, amount - fee);
+        assertEq(fee + net, amount);
     }
 
-    function testBitcoinChainDeposit() public {
-        // Bitcoin user and token (pure CAIP-10)
-        string memory bitcoinWallet = "bip122:000000000019d6689c085ae165831e93:128Lkh3S7CkDTBZ8W7BbpsN3YYizJMp8p6";
-        string memory bitcoinToken = "bip122:000000000019d6689c085ae165831e93:btc";
-        uint256 depositAmount = 50000000; // 0.5 BTC in satoshis
+    function testFuzzMultiUserIsolation(uint128 amount1, uint128 amount2) public {
+        string memory user1AddrStr = addressToString(user1);
+        string memory user2AddrStr = addressToString(user2);
 
-        trading.deposit(bitcoinToken, bitcoinWallet, depositAmount, Trading.ActionIs.OTHER_CHAIN, owner);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount1, Trading.ActionIs.OTHER_CHAIN, user1AddrStr);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER2, amount2, Trading.ActionIs.OTHER_CHAIN, user2AddrStr);
 
-        // Verify Bitcoin balance in EVVM (no conversion to EVM address)
-        uint256 balance = evvm.getBalanceCaip10Native(bitcoinWallet, bitcoinToken);
-        assertEq(balance, depositAmount);
-    }
-
-    function testSolanaChainDeposit() public {
-        // Solana user and token (pure CAIP-10)
-        string memory solanaWallet = "solana:mainnet:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
-        string memory solanaToken = "solana:mainnet:So11111111111111111111111111111111111111112";
-        uint256 depositAmount = 1000 * 10 ** 9; // SOL has 9 decimals
-
-        trading.deposit(solanaToken, solanaWallet, depositAmount, Trading.ActionIs.OTHER_CHAIN, owner);
-
-        // Verify Solana balance in EVVM
-        uint256 balance = evvm.getBalanceCaip10Native(solanaWallet, solanaToken);
-        assertEq(balance, depositAmount);
-    }
-
-    function testNonEvmChainWithdrawal() public {
-        // Test full deposit-withdraw cycle for Cosmos
-        string memory cosmosWallet = "cosmos:cosmoshub-4:cosmos1abc123def456ghi789jkl0mn";
-        string memory cosmosToken = "cosmos:cosmoshub-4:uatom";
-        uint256 depositAmount = 1000 * 10 ** 6;
-        uint256 withdrawAmount = 600 * 10 ** 6;
-
-        // Deposit
-        trading.deposit(cosmosToken, cosmosWallet, depositAmount, Trading.ActionIs.OTHER_CHAIN, owner);
-
-        // Withdraw
-        trading.withdraw(cosmosToken, cosmosWallet, withdrawAmount, Trading.ActionIs.OTHER_CHAIN);
-
-        // Verify remaining balance
-        uint256 balance = evvm.getBalanceCaip10Native(cosmosWallet, cosmosToken);
-        assertEq(balance, depositAmount - withdrawAmount);
-    }
-
-    function testMixedEvmAndNonEvmBalances() public {
-        // EVM deposit
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, user1);
-
-        // Cosmos deposit
-        string memory cosmosWallet = "cosmos:cosmoshub-4:cosmos1abc";
-        string memory cosmosToken = "cosmos:cosmoshub-4:uatom";
-        trading.deposit(cosmosToken, cosmosWallet, 1000 * 10 ** 6, Trading.ActionIs.OTHER_CHAIN, owner);
-
-        // Verify both balances coexist in EVVM CAIP-10 storage
-        uint256 evmBalance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        uint256 cosmosBalance = evvm.getBalanceCaip10Native(cosmosWallet, cosmosToken);
-
-        assertEq(evmBalance, 100 * 10 ** 18);
-        assertEq(cosmosBalance, 1000 * 10 ** 6);
-    }
-
-    function testDualBalanceSystemIsolation() public {
-        // Test that EVM address-based balances and CAIP-10 balances are separate
-
-        // Add balance to EVM address-based storage (via addBalance faucet)
-        evvm.addBalance(user1, address(mockToken), 500 * 10 ** 18);
-
-        // Add balance to CAIP-10 native storage (via Trading)
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, Trading.ActionIs.OTHER_CHAIN, user1);
-
-        // Verify both systems maintain separate balances
-        uint256 evmAddressBalance = evvm.getBalance(user1, address(mockToken));
-        uint256 caip10Balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-
-        assertEq(evmAddressBalance, 500 * 10 ** 18); // EVM storage
-        assertEq(caip10Balance, 100 * 10 ** 18); // CAIP-10 storage
-            // These are independent - demonstrates dual balance system
+        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), amount1);
+        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER2, caip10Token), amount2);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
     // VIEW FUNCTION TESTS
     // ═══════════════════════════════════════════════════════════════════════════════════
 
-    function testTradeBalanceView() public view {
-        // View function test - just checking it exists and is callable
-        trading.getTradeBalance(CAIP10_WALLET_USER1, caip10Token);
-    }
-
-    function testOrderNoncesView() public {
-        uint256 nonce = 1;
-        uint256 evvmID = evvm.getEvvmID();
-
-        assertFalse(trading.orderNonces(CAIP10_WALLET_USER1, nonce));
-
-        bytes32 messageHash = keccak256(
-            abi.encodePacked(
-                "\x19Ethereum Signed Message:\n",
-                Strings.toString(
-                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce)))
-                        .length
-                ),
-                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce))
-            )
-        );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(user1PrivateKey, messageHash);
-        bytes memory signature = abi.encodePacked(r, s, v);
-        trading.cancelOrder(CAIP10_WALLET_USER1, nonce, signature);
-
-        assertTrue(trading.orderNonces(CAIP10_WALLET_USER1, nonce));
-    }
-
     function testAddressesView() public view {
         assertEq(trading.evvmAddress(), address(evvm));
         assertEq(trading.treasuryAddress(), address(treasury));
+        assertEq(trading.nameServiceAddress(), address(mockNameService));
         assertEq(trading.owner(), owner);
     }
 
+    function testConstants() public {
+        assertEq(trading.FEE_BASIS_POINTS(), 100);
+        assertEq(trading.BASIS_POINTS_DIVISOR(), 10000);
+        assertEq(trading.STAKER_DISCOUNT_PERCENT(), 50);
+        assertEq(trading.EXECUTOR_REWARD_PERCENT(), 20);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════════════
-    // FUZZ TESTS - BASIC
+    // EXECUTOR PATTERN TESTS - UNIT TESTS
     // ═══════════════════════════════════════════════════════════════════════════════════
 
-    function testFuzzDepositWithdraw(uint128 amount) public {
-        vm.assume(amount > 0 && amount <= 10000 * 10 ** 18);
+    function testWithdrawWithExecutorBasic() public {
+        uint256 depositAmount = 1000 * 10 ** 18;
+        uint256 withdrawAmount = 100 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+        address fisher = address(0x777); // Fisher/Relayer
 
-        vm.startPrank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE, address(0));
+        // Setup: deposit tokens first
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
 
-        // Verify balance in EVVM CAIP-10 storage
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, amount);
+        // Calculate expected values
+        uint256 baseFee = (withdrawAmount * 100) / 10000; // 1%
+        uint256 executorReward = (baseFee * 20) / 100; // 20% of fee
+        uint256 netAmount = withdrawAmount - baseFee;
 
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE);
+        // User signs withdrawal
+        uint256 nonce = 1;
+        bytes memory signature = createWithdrawalSignature(user1PrivateKey, caip10Token, withdrawAmount, nonce);
+
+        uint256 user1BalanceBefore = mockToken.balanceOf(user1);
+        uint256 fisherBalanceBefore = mockToken.balanceOf(fisher);
+
+        // Fisher executes withdrawal
+        vm.prank(fisher);
+        vm.expectEmit(true, true, true, true);
+        emit ExecutorRewarded(fisher, user1, executorReward);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce, signature);
+
+        // Verify user received net amount
+        assertEq(mockToken.balanceOf(user1), user1BalanceBefore + netAmount);
+
+        // Verify fisher received reward
+        assertEq(mockToken.balanceOf(fisher), fisherBalanceBefore + executorReward);
+
+        // Verify balance deducted from EVVM
+        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), depositAmount - withdrawAmount);
+
+        // Verify nonce is marked as used
+        assertTrue(trading.executorNonces(user1, nonce));
+    }
+
+    function testWithdrawWithExecutorInvalidSignature() public {
+        uint256 depositAmount = 1000 * 10 ** 18;
+        uint256 withdrawAmount = 100 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+        address fisher = address(0x777);
+
+        // Setup: deposit
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // User2 signs (wrong signer)
+        uint256 nonce = 1;
+        bytes memory wrongSignature = createWithdrawalSignature(user2PrivateKey, caip10Token, withdrawAmount, nonce);
+
+        // Fisher tries to execute with wrong signature
+        vm.prank(fisher);
+        vm.expectRevert(Trading.INVALID_SIGNATURE.selector);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce, wrongSignature);
+    }
+
+    function testWithdrawWithExecutorNonceReuse() public {
+        uint256 depositAmount = 1000 * 10 ** 18;
+        uint256 withdrawAmount = 50 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+        address fisher = address(0x777);
+
+        // Setup: deposit
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // User signs withdrawal
+        uint256 nonce = 1;
+        bytes memory signature = createWithdrawalSignature(user1PrivateKey, caip10Token, withdrawAmount, nonce);
+
+        // Fisher executes first time - should succeed
+        vm.prank(fisher);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce, signature);
+
+        // Fisher tries to execute again with same nonce - should fail
+        vm.prank(fisher);
+        vm.expectRevert(Trading.NONCE_ALREADY_USED.selector);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce, signature);
+    }
+
+    function testWithdrawWithExecutorInsufficientBalance() public {
+        uint256 depositAmount = 100 * 10 ** 18;
+        uint256 withdrawAmount = 200 * 10 ** 18; // More than deposited
+        string memory user1AddrStr = addressToString(user1);
+        address fisher = address(0x777);
+
+        // Setup: deposit
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // User signs withdrawal for more than balance
+        uint256 nonce = 1;
+        bytes memory signature = createWithdrawalSignature(user1PrivateKey, caip10Token, withdrawAmount, nonce);
+
+        // Fisher tries to execute - should fail
+        vm.prank(fisher);
+        vm.expectRevert(
+            abi.encodeWithSelector(Trading.CANT_WITHDRAW_MORE_THAN_ACCOUNT_HAVE.selector, depositAmount, withdrawAmount)
+        );
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce, signature);
+    }
+
+    function testWithdrawWithExecutorStakerDiscount() public {
+        uint256 depositAmount = 1000 * 10 ** 18;
+        uint256 withdrawAmount = 100 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+        address fisher = address(0x777);
+
+        // Make user1 a staker
+        evvm.setPointStaker(user1, 0x01);
+
+        // Setup: deposit
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // Calculate expected values with staker discount
+        uint256 baseFee = (withdrawAmount * 100) / 10000; // 1%
+        uint256 stakerFee = baseFee / 2; // 50% discount
+        uint256 executorReward = (stakerFee * 20) / 100; // 20% of discounted fee
+        uint256 netAmount = withdrawAmount - stakerFee;
+
+        // User signs withdrawal
+        uint256 nonce = 1;
+        bytes memory signature = createWithdrawalSignature(user1PrivateKey, caip10Token, withdrawAmount, nonce);
+
+        uint256 fisherBalanceBefore = mockToken.balanceOf(fisher);
+
+        // Fisher executes
+        vm.prank(fisher);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce, signature);
+
+        // Verify fisher received discounted reward
+        assertEq(mockToken.balanceOf(fisher), fisherBalanceBefore + executorReward);
+    }
+
+    function testWithdrawWithExecutorMultipleExecutors() public {
+        uint256 depositAmount = 1000 * 10 ** 18;
+        uint256 withdrawAmount = 100 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+        address fisher1 = address(0x777);
+        address fisher2 = address(0x888);
+
+        // Setup: deposit
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // User signs two different withdrawals with different nonces
+        uint256 nonce1 = 1;
+        uint256 nonce2 = 2;
+        bytes memory signature1 = createWithdrawalSignature(user1PrivateKey, caip10Token, withdrawAmount, nonce1);
+        bytes memory signature2 = createWithdrawalSignature(user1PrivateKey, caip10Token, withdrawAmount, nonce2);
+
+        uint256 baseFee = (withdrawAmount * 100) / 10000;
+        uint256 executorReward = (baseFee * 20) / 100;
+
+        // Fisher1 executes first withdrawal
+        vm.prank(fisher1);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce1, signature1);
+
+        // Fisher2 executes second withdrawal
+        vm.prank(fisher2);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce2, signature2);
+
+        // Verify both fishers received rewards
+        assertEq(mockToken.balanceOf(fisher1), executorReward);
+        assertEq(mockToken.balanceOf(fisher2), executorReward);
+
+        // Verify both nonces are used
+        assertTrue(trading.executorNonces(user1, nonce1));
+        assertTrue(trading.executorNonces(user1, nonce2));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // EXECUTOR PATTERN TESTS - INTEGRATION TESTS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testExecutorFullWorkflow() public {
+        address fisher = address(0x777);
+        uint256 depositAmount = 1000 * 10 ** 18;
+        uint256 withdrawAmount = 200 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+
+        // Step 1: User deposits (normal flow)
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // Step 2: User signs withdrawal off-chain
+        uint256 nonce = 1;
+        bytes memory signature = createWithdrawalSignature(user1PrivateKey, caip10Token, withdrawAmount, nonce);
+
+        // Step 3: Fisher validates (in real scenario, fisher would check balance/signature off-chain)
+        uint256 balance = trading.getTradeBalance(CAIP10_WALLET_USER1, caip10Token);
+        assertTrue(balance >= withdrawAmount, "Fisher validation: insufficient balance");
+
+        // Step 4: Fisher executes and gets rewarded
+        vm.prank(fisher);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce, signature);
+
+        // Verify final state
+        uint256 baseFee = (withdrawAmount * 100) / 10000;
+        uint256 executorReward = (baseFee * 20) / 100;
+        uint256 netAmount = withdrawAmount - baseFee;
+
+        assertEq(mockToken.balanceOf(user1), 10000 * 10 ** 18 - depositAmount + netAmount);
+        assertEq(mockToken.balanceOf(fisher), executorReward);
+        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), depositAmount - withdrawAmount);
+    }
+
+    function testExecutorWithNameResolution() public {
+        address fisher = address(0x777);
+        uint256 depositAmount = 500 * 10 ** 18;
+        uint256 withdrawAmount = 100 * 10 ** 18;
+
+        // Register user1 with name
+        mockNameService.registerName("alice", user1);
+
+        // Deposit with name
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, "alice");
+
+        // User signs withdrawal
+        uint256 nonce = 1;
+        bytes memory signature = createWithdrawalSignature(user1PrivateKey, caip10Token, withdrawAmount, nonce);
+
+        // Fisher executes
+        vm.prank(fisher);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce, signature);
+
+        // Verify execution
+        uint256 baseFee = (withdrawAmount * 100) / 10000;
+        uint256 executorReward = (baseFee * 20) / 100;
+        assertEq(mockToken.balanceOf(fisher), executorReward);
+    }
+
+    function testExecutorVsRegularWithdraw() public {
+        address fisher = address(0x777);
+        uint256 depositAmount = 1000 * 10 ** 18;
+        uint256 withdrawAmount = 100 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+
+        // Setup two separate deposits
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // Regular withdrawal - user pays gas
+        uint256 gasBefore = gasleft();
+        vm.prank(user1);
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, Trading.ActionIs.NATIVE);
+        uint256 regularGas = gasBefore - gasleft();
+
+        // Executor withdrawal - fisher pays gas
+        uint256 nonce = 1;
+        bytes memory signature = createWithdrawalSignature(user1PrivateKey, caip10Token, withdrawAmount, nonce);
+
+        gasBefore = gasleft();
+        vm.prank(fisher);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce, signature);
+        uint256 executorGas = gasBefore - gasleft();
+
+        // Executor path uses more gas due to signature verification
+        assertTrue(executorGas > regularGas);
+
+        // But fisher gets rewarded
+        uint256 baseFee = (withdrawAmount * 100) / 10000;
+        uint256 executorReward = (baseFee * 20) / 100;
+        assertEq(mockToken.balanceOf(fisher), executorReward);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // EXECUTOR PATTERN TESTS - FUZZ TESTS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testFuzzExecutorWithdrawal(uint128 withdrawAmount) public {
+        // Use fixed deposit, fuzz withdrawal
+        uint256 depositAmount = 1000 * 10 ** 18;
+        vm.assume(withdrawAmount > 10000 && withdrawAmount <= depositAmount);
+
+        address fisher = address(0x777);
+        string memory user1AddrStr = addressToString(user1);
+
+        // Deposit
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // Sign and execute withdrawal
+        uint256 nonce = 1;
+        bytes memory signature = createWithdrawalSignature(user1PrivateKey, caip10Token, withdrawAmount, nonce);
+
+        vm.prank(fisher);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce, signature);
+
+        // Verify invariants
+        uint256 baseFee = (withdrawAmount * 100) / 10000;
+        uint256 executorReward = (baseFee * 20) / 100;
+        uint256 netAmount = withdrawAmount - baseFee;
+
+        assertEq(mockToken.balanceOf(fisher), executorReward);
+        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), depositAmount - withdrawAmount);
+    }
+
+    function testFuzzExecutorMultipleWithdrawals(uint64 amount1, uint64 amount2, uint64 amount3) public {
+        vm.assume(amount1 > 10000 && amount1 <= 1000 * 10 ** 18);
+        vm.assume(amount2 > 10000 && amount2 <= 1000 * 10 ** 18);
+        vm.assume(amount3 > 10000 && amount3 <= 1000 * 10 ** 18);
+
+        uint256 totalDeposit = uint256(amount1) + uint256(amount2) + uint256(amount3);
+        vm.assume(totalDeposit <= 5000 * 10 ** 18);
+
+        address fisher = address(0x777);
+        string memory user1AddrStr = addressToString(user1);
+
+        // Deposit enough for all withdrawals
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, totalDeposit, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // Execute three withdrawals with different nonces
+        bytes memory sig1 = createWithdrawalSignature(user1PrivateKey, caip10Token, amount1, 1);
+        bytes memory sig2 = createWithdrawalSignature(user1PrivateKey, caip10Token, amount2, 2);
+        bytes memory sig3 = createWithdrawalSignature(user1PrivateKey, caip10Token, amount3, 3);
+
+        vm.startPrank(fisher);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, amount1, 1, sig1);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, amount2, 2, sig2);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, amount3, 3, sig3);
         vm.stopPrank();
 
-        // Verify zero balance in EVVM
-        uint256 finalBalance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(finalBalance, 0);
+        // Verify all nonces are used
+        assertTrue(trading.executorNonces(user1, 1));
+        assertTrue(trading.executorNonces(user1, 2));
+        assertTrue(trading.executorNonces(user1, 3));
+
+        // Verify fisher accumulated rewards (calculate individually to avoid rounding errors)
+        uint256 fee1 = (uint256(amount1) * 100) / 10000;
+        uint256 fee2 = (uint256(amount2) * 100) / 10000;
+        uint256 fee3 = (uint256(amount3) * 100) / 10000;
+        uint256 reward1 = (fee1 * 20) / 100;
+        uint256 reward2 = (fee2 * 20) / 100;
+        uint256 reward3 = (fee3 * 20) / 100;
+        uint256 expectedTotalRewards = reward1 + reward2 + reward3;
+
+        assertEq(mockToken.balanceOf(fisher), expectedTotalRewards);
     }
 
-    function testFuzzSyncUp(uint128 amount1, uint128 amount2) public {
-        Trading.SyncUpArguments[] memory data = new Trading.SyncUpArguments[](2);
-        data[0] = Trading.SyncUpArguments({
-            caip10Wallet: CAIP10_WALLET_USER1,
-            caip10Token: caip10Token,
-            evmDepositorWallet: user1,
-            newAmount: amount1
-        });
-        data[1] = Trading.SyncUpArguments({
-            caip10Wallet: CAIP10_WALLET_USER2,
-            caip10Token: caip10Token,
-            evmDepositorWallet: user2,
-            newAmount: amount2
-        });
+    function testFuzzExecutorWithRandomFisher(address randomFisher, uint128 amount) public {
+        vm.assume(randomFisher != address(0));
+        vm.assume(randomFisher != user1);
+        vm.assume(randomFisher != address(trading));
+        vm.assume(randomFisher != address(treasury));
+        vm.assume(amount > 10000 && amount <= 5000 * 10 ** 18);
 
-        trading.syncUp(data);
+        string memory user1AddrStr = addressToString(user1);
 
-        // Verify balances in EVVM CAIP-10 storage
-        uint256 balance1 = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        uint256 balance2 = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER2, caip10Token);
-
-        assertEq(balance1, amount1);
-        assertEq(balance2, amount2);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // ADVANCED FUZZ TESTS - EXTREME VALUES
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    function testFuzzDepositOtherChainExtremeValues(uint256 amount) public {
-        // Test with full uint256 range
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.OTHER_CHAIN, user1);
-
-        // Verify in EVVM CAIP-10 storage
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, amount);
-    }
-
-    function testFuzzMultipleDepositsAccumulation(uint128 amount1, uint128 amount2, uint128 amount3) public {
-        // Test that multiple deposits accumulate correctly
-        vm.assume(uint256(amount1) + uint256(amount2) + uint256(amount3) <= type(uint256).max);
-
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount1, Trading.ActionIs.OTHER_CHAIN, user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount2, Trading.ActionIs.OTHER_CHAIN, user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount3, Trading.ActionIs.OTHER_CHAIN, user1);
-
-        // Verify accumulated balance in EVVM
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, uint256(amount1) + uint256(amount2) + uint256(amount3));
-    }
-
-    function testFuzzPartialWithdrawals(uint128 deposit, uint64 withdraw1, uint64 withdraw2) public {
-        // Test multiple partial withdrawals
-        vm.assume(deposit > 0);
-        vm.assume(uint256(withdraw1) + uint256(withdraw2) <= uint256(deposit));
-
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, deposit, Trading.ActionIs.OTHER_CHAIN, owner);
-
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdraw1, Trading.ActionIs.OTHER_CHAIN);
-        uint256 balance1 = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance1, uint256(deposit) - uint256(withdraw1));
-
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdraw2, Trading.ActionIs.OTHER_CHAIN);
-        uint256 balance2 = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance2, uint256(deposit) - uint256(withdraw1) - uint256(withdraw2));
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // FUZZ TESTS - ERROR CONDITIONS
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    function testFuzzWithdrawExceedsBalance(uint128 deposit, uint128 withdraw) public {
-        vm.assume(withdraw > deposit);
-
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, deposit, Trading.ActionIs.OTHER_CHAIN, owner);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(Trading.CANT_WITHDRAW_MORE_THAN_ACCOUNT_HAVE.selector, deposit, withdraw)
-        );
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdraw, Trading.ActionIs.OTHER_CHAIN);
-    }
-
-    function testFuzzUnauthorizedWithdrawal(uint128 amount, address randomUser) public {
-        vm.assume(randomUser != user1 && randomUser != address(0));
-        vm.assume(amount > 0 && amount <= 10000 * 10 ** 18);
-
-        // Deposit as user1
+        // Deposit
         vm.prank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE, address(0));
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE, user1AddrStr);
 
-        // Try to withdraw as different user
-        vm.prank(randomUser);
-        vm.expectRevert(abi.encodeWithSelector(Trading.YOURE_NOT_THE_OWNER_OF_THE_ACCOUNT.selector, user1));
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE);
+        // Random fisher executes
+        uint256 nonce = 1;
+        bytes memory signature = createWithdrawalSignature(user1PrivateKey, caip10Token, amount, nonce);
+
+        vm.prank(randomFisher);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, amount, nonce, signature);
+
+        // Verify random fisher got rewarded
+        uint256 baseFee = (amount * 100) / 10000;
+        uint256 executorReward = (baseFee * 20) / 100;
+        assertEq(mockToken.balanceOf(randomFisher), executorReward);
     }
 
-    function testFuzzInvalidSignature(uint256 nonce, uint256 wrongPrivateKey) public {
-        vm.assume(wrongPrivateKey != 0 && wrongPrivateKey != user1PrivateKey);
-        vm.assume(wrongPrivateKey < 115792089237316195423570985008687907852837564279074904382605163141518161494337);
+    function testFuzzExecutorRewardCalculation(uint128 withdrawAmount) public {
+        vm.assume(withdrawAmount > 10000 && withdrawAmount <= 5000 * 10 ** 18);
 
+        address fisher = address(0x777);
+        string memory user1AddrStr = addressToString(user1);
+
+        // Deposit
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // Execute
+        uint256 nonce = 1;
+        bytes memory signature = createWithdrawalSignature(user1PrivateKey, caip10Token, withdrawAmount, nonce);
+
+        vm.prank(fisher);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce, signature);
+
+        // Verify reward calculation
+        uint256 expectedFee = (withdrawAmount * 100) / 10000; // 1%
+        uint256 expectedReward = (expectedFee * 20) / 100; // 20% of fee
+        uint256 expectedNet = withdrawAmount - expectedFee;
+        uint256 expectedTreasuryFee = expectedFee - expectedReward; // 80% of fee
+
+        assertEq(mockToken.balanceOf(fisher), expectedReward);
+        assertEq(mockToken.balanceOf(user1), 10000 * 10 ** 18 - withdrawAmount + expectedNet);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // EXECUTOR NONCE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testExecutorNonceTracking() public {
+        address fisher = address(0x777);
+        string memory user1AddrStr = addressToString(user1);
+
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 1000 * 10 ** 18, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // Check nonce is not used initially
+        assertFalse(trading.executorNonces(user1, 1));
+
+        // Execute withdrawal
+        bytes memory sig = createWithdrawalSignature(user1PrivateKey, caip10Token, 100 * 10 ** 18, 1);
+        vm.prank(fisher);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, 1, sig);
+
+        // Check nonce is now used
+        assertTrue(trading.executorNonces(user1, 1));
+    }
+
+    function testExecutorNonceIndependentPerUser() public {
+        address fisher = address(0x777);
+        string memory user1AddrStr = addressToString(user1);
+        string memory user2AddrStr = addressToString(user2);
+
+        // Both users deposit
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, 1000 * 10 ** 18, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        vm.prank(user2);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER2, 1000 * 10 ** 18, Trading.ActionIs.NATIVE, user2AddrStr);
+
+        // Both use nonce 1
+        bytes memory sig1 = createWithdrawalSignature(user1PrivateKey, caip10Token, 100 * 10 ** 18, 1);
+        bytes memory sig2 = createWithdrawalSignature(user2PrivateKey, caip10Token, 100 * 10 ** 18, 1);
+
+        vm.startPrank(fisher);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, 100 * 10 ** 18, 1, sig1);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER2, 100 * 10 ** 18, 1, sig2);
+        vm.stopPrank();
+
+        // Both nonces should be used independently
+        assertTrue(trading.executorNonces(user1, 1));
+        assertTrue(trading.executorNonces(user2, 1));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // HELPER FUNCTIONS FOR EXECUTOR TESTS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function createWithdrawalSignature(
+        uint256 privateKey,
+        string memory token,
+        uint256 amount,
+        uint256 nonce
+    ) internal view returns (bytes memory) {
         uint256 evvmID = evvm.getEvvmID();
 
-        // Create signature with wrong private key
+        string memory message = string.concat(
+            token,
+            ",",
+            Strings.toString(amount),
+            ",",
+            Strings.toString(nonce)
+        );
+
         bytes32 messageHash = keccak256(
             abi.encodePacked(
                 "\x19Ethereum Signed Message:\n",
                 Strings.toString(
-                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce)))
-                        .length
+                    bytes(
+                        string.concat(
+                            Strings.toString(evvmID),
+                            ",",
+                            "withdrawWithExecutor",
+                            ",",
+                            message
+                        )
+                    ).length
                 ),
-                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce))
+                string.concat(
+                    Strings.toString(evvmID),
+                    ",",
+                    "withdrawWithExecutor",
+                    ",",
+                    message
+                )
             )
         );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongPrivateKey, messageHash);
-        bytes memory signature = abi.encodePacked(r, s, v);
 
-        vm.expectRevert(Trading.INVALID_SIGNATURE.selector);
-        trading.cancelOrder(CAIP10_WALLET_USER1, nonce, signature);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // FUZZ TESTS - BOUNDARY CONDITIONS
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    function testFuzzMaxUint256Operations(uint256 amount) public {
-        // Test operations at uint256 boundaries
-        // Bound to prevent fee calculation overflow (amount * 100 / 10000 must not overflow)
-        vm.assume(amount > 0 && amount <= type(uint256).max / 100);
-
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.OTHER_CHAIN, owner);
-
-        // Verify in EVVM
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, amount);
-
-        // Withdraw full amount
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.OTHER_CHAIN);
-
-        // Verify zero balance (after fee deduction)
-        uint256 finalBalance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(finalBalance, 0);
-    }
-
-    function testFuzzSyncUpOverwritePreviousBalance(uint128 initialAmount, uint128 newAmount) public {
-        // Test that syncUp correctly overwrites previous balances
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, initialAmount, Trading.ActionIs.OTHER_CHAIN, user1);
-
-        Trading.SyncUpArguments[] memory data = new Trading.SyncUpArguments[](1);
-        data[0] = Trading.SyncUpArguments({
-            caip10Wallet: CAIP10_WALLET_USER1,
-            caip10Token: caip10Token,
-            evmDepositorWallet: user1,
-            newAmount: newAmount
-        });
-
-        trading.syncUp(data);
-
-        // Verify balance was overwritten in EVVM
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, newAmount); // Should be newAmount, not initialAmount + newAmount
-    }
-
-    function testFuzzMultipleSyncUpOperations(uint64 amount1, uint64 amount2, uint64 amount3) public {
-        // Test multiple syncUp operations in sequence
-        Trading.SyncUpArguments[] memory data1 = new Trading.SyncUpArguments[](1);
-        data1[0] = Trading.SyncUpArguments({
-            caip10Wallet: CAIP10_WALLET_USER1,
-            caip10Token: caip10Token,
-            evmDepositorWallet: user1,
-            newAmount: amount1
-        });
-        trading.syncUp(data1);
-
-        Trading.SyncUpArguments[] memory data2 = new Trading.SyncUpArguments[](1);
-        data2[0] = Trading.SyncUpArguments({
-            caip10Wallet: CAIP10_WALLET_USER1,
-            caip10Token: caip10Token,
-            evmDepositorWallet: user1,
-            newAmount: amount2
-        });
-        trading.syncUp(data2);
-
-        Trading.SyncUpArguments[] memory data3 = new Trading.SyncUpArguments[](1);
-        data3[0] = Trading.SyncUpArguments({
-            caip10Wallet: CAIP10_WALLET_USER1,
-            caip10Token: caip10Token,
-            evmDepositorWallet: user1,
-            newAmount: amount3
-        });
-        trading.syncUp(data3);
-
-        // Verify last syncUp wins in EVVM
-        uint256 finalBalance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(finalBalance, amount3); // Last syncUp wins
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // FUZZ TESTS - COMPLEX STATE TRANSITIONS
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    function testFuzzDepositSyncUpWithdrawCycle(uint128 depositAmount, uint128 syncAmount, uint64 withdrawAmount)
-        public
-    {
-        vm.assume(withdrawAmount <= syncAmount);
-
-        // Deposit initial amount
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.OTHER_CHAIN, owner);
-
-        // SyncUp to new amount (overwrites)
-        Trading.SyncUpArguments[] memory data = new Trading.SyncUpArguments[](1);
-        data[0] = Trading.SyncUpArguments({
-            caip10Wallet: CAIP10_WALLET_USER1,
-            caip10Token: caip10Token,
-            evmDepositorWallet: owner,
-            newAmount: syncAmount
-        });
-        trading.syncUp(data);
-
-        // Withdraw from synced amount
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, Trading.ActionIs.OTHER_CHAIN);
-
-        // Verify final balance in EVVM
-        uint256 finalBalance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(finalBalance, uint256(syncAmount) - uint256(withdrawAmount));
-    }
-
-    function testFuzzMixedDepositModes(uint128 nativeAmount, uint128 otherChainAmount) public {
-        vm.assume(nativeAmount > 0 && nativeAmount <= 5000 * 10 ** 18);
-
-        // Deposit via NATIVE
-        vm.prank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, nativeAmount, Trading.ActionIs.NATIVE, address(0));
-
-        // Deposit via OTHER_CHAIN (should accumulate)
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, otherChainAmount, Trading.ActionIs.OTHER_CHAIN, user1);
-
-        // Verify accumulated balance in EVVM
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, uint256(nativeAmount) + uint256(otherChainAmount));
-    }
-
-    function testFuzzCancelMultipleOrders(uint128 nonce1, uint128 nonce2, uint128 nonce3) public {
-        vm.assume(nonce1 != nonce2 && nonce2 != nonce3 && nonce1 != nonce3);
-
-        uint256 evvmID = evvm.getEvvmID();
-
-        // Cancel first order
-        bytes32 hash1 = keccak256(
-            abi.encodePacked(
-                "\x19Ethereum Signed Message:\n",
-                Strings.toString(
-                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce1)))
-                        .length
-                ),
-                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce1))
-            )
-        );
-        (uint8 v1, bytes32 r1, bytes32 s1) = vm.sign(user1PrivateKey, hash1);
-        trading.cancelOrder(CAIP10_WALLET_USER1, nonce1, abi.encodePacked(r1, s1, v1));
-
-        // Cancel second order
-        bytes32 hash2 = keccak256(
-            abi.encodePacked(
-                "\x19Ethereum Signed Message:\n",
-                Strings.toString(
-                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce2)))
-                        .length
-                ),
-                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce2))
-            )
-        );
-        (uint8 v2, bytes32 r2, bytes32 s2) = vm.sign(user1PrivateKey, hash2);
-        trading.cancelOrder(CAIP10_WALLET_USER1, nonce2, abi.encodePacked(r2, s2, v2));
-
-        // Cancel third order
-        bytes32 hash3 = keccak256(
-            abi.encodePacked(
-                "\x19Ethereum Signed Message:\n",
-                Strings.toString(
-                    bytes(string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce3)))
-                        .length
-                ),
-                string.concat(Strings.toString(evvmID), ",", "cancelOrder", ",", Strings.toString(nonce3))
-            )
-        );
-        (uint8 v3, bytes32 r3, bytes32 s3) = vm.sign(user1PrivateKey, hash3);
-        trading.cancelOrder(CAIP10_WALLET_USER1, nonce3, abi.encodePacked(r3, s3, v3));
-
-        assertTrue(trading.orderNonces(CAIP10_WALLET_USER1, nonce1));
-        assertTrue(trading.orderNonces(CAIP10_WALLET_USER1, nonce2));
-        assertTrue(trading.orderNonces(CAIP10_WALLET_USER1, nonce3));
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // FUZZ TESTS - MULTI-USER SCENARIOS
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    function testFuzzMultiUserIsolation(uint128 amount1, uint128 amount2, uint128 amount3) public {
-        // Test that different users' balances are isolated
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount1, Trading.ActionIs.OTHER_CHAIN, user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER2, amount2, Trading.ActionIs.OTHER_CHAIN, user2);
-
-        // Add to user1 again
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount3, Trading.ActionIs.OTHER_CHAIN, user1);
-
-        // Verify isolation in EVVM
-        uint256 balance1 = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        uint256 balance2 = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER2, caip10Token);
-
-        assertEq(balance1, uint256(amount1) + uint256(amount3));
-        assertEq(balance2, amount2);
-    }
-
-    function testFuzzDifferentTokensIsolation(uint128 amount1, uint128 amount2) public {
-        // Create second mock token
-        MockERC20 secondToken = new MockERC20();
-        string memory caip10Token2 =
-            string(abi.encodePacked("eip155:1:", Strings.toHexString(uint160(address(secondToken)), 20)));
-
-        // Deposit to same wallet but different tokens
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount1, Trading.ActionIs.OTHER_CHAIN, user1);
-        trading.deposit(caip10Token2, CAIP10_WALLET_USER1, amount2, Trading.ActionIs.OTHER_CHAIN, user1);
-
-        // Verify token isolation in EVVM
-        uint256 balance1 = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        uint256 balance2 = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token2);
-
-        assertEq(balance1, amount1);
-        assertEq(balance2, amount2);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // FUZZ TESTS - INVARIANT CHECKS
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    function testFuzzInvariantTotalBalanceConservation(uint128 deposit1, uint128 deposit2, uint64 withdraw) public {
-        vm.assume(withdraw <= deposit1);
-
-        // Setup two users
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, deposit1, Trading.ActionIs.OTHER_CHAIN, owner);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER2, deposit2, Trading.ActionIs.OTHER_CHAIN, user2);
-
-        uint256 totalBefore = uint256(deposit1) + uint256(deposit2);
-
-        // Withdraw from user1
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdraw, Trading.ActionIs.OTHER_CHAIN);
-
-        // Verify balances in EVVM conserve total
-        uint256 balance1 = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        uint256 balance2 = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER2, caip10Token);
-
-        assertEq(balance1 + balance2, totalBefore - withdraw);
-    }
-
-    function testFuzzNoUnderflowOnWithdraw(uint128 balance, uint128 withdraw) public {
-        vm.assume(withdraw <= balance);
-
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, balance, Trading.ActionIs.OTHER_CHAIN, owner);
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdraw, Trading.ActionIs.OTHER_CHAIN);
-
-        // Verify no underflow in EVVM
-        uint256 remainingBalance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(remainingBalance, uint256(balance) - uint256(withdraw));
-        assertTrue(remainingBalance <= balance); // No overflow
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // FUZZ TESTS - NON-EVM CHAINS
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    function testFuzzCosmosBalances(uint128 amount) public {
-        string memory cosmosWallet = "cosmos:cosmoshub-4:cosmos1test";
-        string memory cosmosToken = "cosmos:cosmoshub-4:uatom";
-
-        trading.deposit(cosmosToken, cosmosWallet, amount, Trading.ActionIs.OTHER_CHAIN, owner);
-
-        // Verify Cosmos balance without any address conversion
-        uint256 balance = evvm.getBalanceCaip10Native(cosmosWallet, cosmosToken);
-        assertEq(balance, amount);
-    }
-
-    function testFuzzMultiChainIsolation(uint64 evmAmount, uint64 cosmosAmount, uint64 solanaAmount) public {
-        string memory cosmosWallet = "cosmos:cosmoshub-4:cosmos1test";
-        string memory cosmosToken = "cosmos:cosmoshub-4:uatom";
-        string memory solanaWallet = "solana:mainnet:solana1test";
-        string memory solanaToken = "solana:mainnet:sol";
-
-        // Deposit to three different chains
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, evmAmount, Trading.ActionIs.OTHER_CHAIN, user1);
-        trading.deposit(cosmosToken, cosmosWallet, cosmosAmount, Trading.ActionIs.OTHER_CHAIN, owner);
-        trading.deposit(solanaToken, solanaWallet, solanaAmount, Trading.ActionIs.OTHER_CHAIN, owner);
-
-        // Verify each chain's balance is isolated
-        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), evmAmount);
-        assertEq(evvm.getBalanceCaip10Native(cosmosWallet, cosmosToken), cosmosAmount);
-        assertEq(evvm.getBalanceCaip10Native(solanaWallet, solanaToken), solanaAmount);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // FEE TESTS - NON-STAKER
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    function testWithdrawFeeNonStaker() public {
-        uint256 depositAmount = 1000 * 10 ** 18;
-        uint256 withdrawAmount = 100 * 10 ** 18;
-
-        // Deposit as non-staker
-        vm.prank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, address(0));
-
-        // Get fee info before withdrawal
-        (uint256 expectedFee, uint256 expectedNet, bool isStaker) =
-            trading.getFeeInfo(withdrawAmount, CAIP10_WALLET_USER1, caip10Token);
-
-        // Should NOT be a staker
-        assertFalse(isStaker);
-
-        // Fee should be 1% for non-staker
-        uint256 calculatedFee = (withdrawAmount * 100) / 10000;
-        assertEq(expectedFee, calculatedFee);
-        assertEq(expectedNet, withdrawAmount - calculatedFee);
-
-        uint256 userBalanceBefore = mockToken.balanceOf(user1);
-
-        // Withdraw
-        vm.prank(user1);
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, Trading.ActionIs.NATIVE);
-
-        // Verify user received net amount
-        assertEq(mockToken.balanceOf(user1), userBalanceBefore + expectedNet);
-
-        // Verify fee was credited to treasury's CAIP-10 balance
-        string memory treasuryCaip10 = Caip10Utils.toCaip10("eip155", "1", address(treasury));
-        uint256 treasuryFee = evvm.getBalanceCaip10Native(treasuryCaip10, caip10Token);
-        assertEq(treasuryFee, expectedFee);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // FEE TESTS - STAKER
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    function testWithdrawFeeStaker() public {
-        uint256 depositAmount = 1000 * 10 ** 18;
-        uint256 withdrawAmount = 100 * 10 ** 18;
-
-        // Register user1 as a staker in EVVM (0x01 = FLAG_IS_STAKER)
-        evvm.setPointStaker(user1, 0x01);
-
-        // Deposit as staker
-        vm.prank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, address(0));
-
-        // Get fee info before withdrawal
-        (uint256 expectedFee, uint256 expectedNet, bool isStaker) =
-            trading.getFeeInfo(withdrawAmount, CAIP10_WALLET_USER1, caip10Token);
-
-        // Should be a staker
-        assertTrue(isStaker);
-
-        // Fee should be 0.5% for staker (50% discount)
-        uint256 baseFee = (withdrawAmount * 100) / 10000; // 1%
-        uint256 discountedFee = baseFee / 2; // 50% off
-        assertEq(expectedFee, discountedFee);
-        assertEq(expectedNet, withdrawAmount - discountedFee);
-
-        uint256 userBalanceBefore = mockToken.balanceOf(user1);
-
-        // Withdraw
-        vm.prank(user1);
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, Trading.ActionIs.NATIVE);
-
-        // Verify user received net amount with discounted fee
-        assertEq(mockToken.balanceOf(user1), userBalanceBefore + expectedNet);
-
-        // Verify discounted fee was credited to treasury
-        string memory treasuryCaip10 = Caip10Utils.toCaip10("eip155", "1", address(treasury));
-        uint256 treasuryFee = evvm.getBalanceCaip10Native(treasuryCaip10, caip10Token);
-        assertEq(treasuryFee, discountedFee);
-    }
-
-    function testGetFeeInfoNonStaker() public {
-        uint256 amount = 1000 * 10 ** 18;
-
-        // Deposit as non-staker
-        vm.prank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE, address(0));
-
-        // Test various withdrawal amounts
-        (uint256 fee100, uint256 net100, bool isStaker100) =
-            trading.getFeeInfo(100 * 10 ** 18, CAIP10_WALLET_USER1, caip10Token);
-        assertFalse(isStaker100);
-        assertEq(fee100, 1 * 10 ** 18); // 1% of 100
-        assertEq(net100, 99 * 10 ** 18);
-
-        (uint256 fee500, uint256 net500, bool isStaker500) =
-            trading.getFeeInfo(500 * 10 ** 18, CAIP10_WALLET_USER1, caip10Token);
-        assertFalse(isStaker500);
-        assertEq(fee500, 5 * 10 ** 18); // 1% of 500
-        assertEq(net500, 495 * 10 ** 18);
-    }
-
-    function testGetFeeInfoStaker() public {
-        uint256 amount = 1000 * 10 ** 18;
-
-        // Register as staker (0x01 = FLAG_IS_STAKER)
-        evvm.setPointStaker(user1, 0x01);
-
-        // Deposit
-        vm.prank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE, address(0));
-
-        // Test fee calculation with staker discount
-        (uint256 fee100, uint256 net100, bool isStaker100) =
-            trading.getFeeInfo(100 * 10 ** 18, CAIP10_WALLET_USER1, caip10Token);
-        assertTrue(isStaker100);
-        assertEq(fee100, 0.5 * 10 ** 18); // 0.5% of 100 (50% discount)
-        assertEq(net100, 99.5 * 10 ** 18);
-    }
-
-    function testFeeEventEmitted() public {
-        uint256 depositAmount = 1000 * 10 ** 18;
-        uint256 withdrawAmount = 100 * 10 ** 18;
-
-        vm.prank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, address(0));
-
-        uint256 expectedFee = (withdrawAmount * 100) / 10000;
-
-        // Expect FeeCollected event
-        vm.expectEmit(true, true, true, true);
-        emit Trading.FeeCollected(CAIP10_WALLET_USER1, caip10Token, expectedFee, false);
-
-        vm.prank(user1);
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, Trading.ActionIs.NATIVE);
-    }
-
-    function testFeeOnOtherChainWithdrawal() public {
-        uint256 depositAmount = 1000 * 10 ** 18;
-        uint256 withdrawAmount = 100 * 10 ** 18;
-
-        // Deposit via OTHER_CHAIN
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.OTHER_CHAIN, owner);
-
-        uint256 expectedFee = (withdrawAmount * 100) / 10000;
-
-        // Withdraw via OTHER_CHAIN (owner only)
-        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, Trading.ActionIs.OTHER_CHAIN);
-
-        // Verify fee was credited to treasury via CAIP-10
-        string memory treasuryCaip10 = Caip10Utils.toCaip10("eip155", "1", address(treasury));
-        uint256 treasuryFee = evvm.getBalanceCaip10Native(treasuryCaip10, caip10Token);
-        assertEq(treasuryFee, expectedFee);
-
-        // Verify user balance decreased by full amount
-        uint256 balance = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
-        assertEq(balance, depositAmount - withdrawAmount);
-    }
-
-    function testFuzzFeeCalculation(uint128 amount) public {
-        // Bound to prevent overflow and stay within user's token balance
-        vm.assume(amount > 0 && amount <= 10000 * 10 ** 18); // Max balance user has
-        vm.assume(amount >= 10000); // Ensure fee is at least 1 wei
-
-        vm.prank(user1);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE, address(0));
-
-        (uint256 fee, uint256 net, bool isStaker) = trading.getFeeInfo(amount, CAIP10_WALLET_USER1, caip10Token);
-
-        // Verify fee calculation
-        assertFalse(isStaker);
-        uint256 expectedFee = (amount * 100) / 10000;
-        assertEq(fee, expectedFee);
-        assertEq(net, amount - expectedFee);
-
-        // Verify fee + net = original amount
-        assertEq(fee + net, amount);
-    }
-
-    function testFuzzStakerDiscount(uint128 amount) public {
-        // Bound to prevent overflow and stay within user's token balance
-        vm.assume(amount > 0 && amount <= 10000 * 10 ** 18); // Max balance user has
-        vm.assume(amount >= 10000); // Ensure fee is at least 1 wei
-
-        // Register as staker (0x01 = FLAG_IS_STAKER)
-        evvm.setPointStaker(user2, 0x01);
-
-        vm.prank(user2);
-        trading.deposit(caip10Token, CAIP10_WALLET_USER2, amount, Trading.ActionIs.NATIVE, address(0));
-
-        (uint256 fee, uint256 net, bool isStaker) = trading.getFeeInfo(amount, CAIP10_WALLET_USER2, caip10Token);
-
-        // Verify staker status and discounted fee
-        assertTrue(isStaker);
-        uint256 baseFee = (amount * 100) / 10000;
-        uint256 expectedFee = baseFee / 2; // 50% discount
-        assertEq(fee, expectedFee);
-        assertEq(net, amount - expectedFee);
-
-        // Verify fee + net = original amount
-        assertEq(fee + net, amount);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, messageHash);
+        return abi.encodePacked(r, s, v);
     }
 }

@@ -109,7 +109,12 @@ contract Trading is Ownable {
      * @param amount Amount of tokens deposited
      * @param evmDepositorAddress EVM address of the depositor
      */
-    event Deposit(string caip10Wallet, string caip10Token, uint256 amount, address evmDepositorAddress);
+    event Deposit(
+        string caip10Wallet,
+        string caip10Token,
+        uint256 amount,
+        address evmDepositorAddress
+    );
 
     /**
      * @notice Emitted when a user withdraws tokens from their trading balance
@@ -118,7 +123,12 @@ contract Trading is Ownable {
      * @param amount Amount of tokens withdrawn
      * @param evmDepositorAddress EVM address of the withdrawer
      */
-    event Withdraw(string caip10Wallet, string caip10Token, uint256 amount, address evmDepositorAddress);
+    event Withdraw(
+        string caip10Wallet,
+        string caip10Token,
+        uint256 amount,
+        address evmDepositorAddress
+    );
 
     /**
      * @notice Emitted when a user cancels an order using signature verification
@@ -134,7 +144,20 @@ contract Trading is Ownable {
      * @param feeAmount Amount of fee collected
      * @param isStaker Whether the user received staker discount
      */
-    event FeeCollected(string caip10Wallet, string caip10Token, uint256 feeAmount, bool isStaker);
+    event FeeCollected(
+        string caip10Wallet,
+        string caip10Token,
+        uint256 feeAmount,
+        bool isStaker
+    );
+
+    /**
+     * @notice Emitted when an executor (Fisher/Relayer) executes a transaction on behalf of a user
+     * @param executor Address of the Fisher/Relayer who executed the transaction
+     * @param user Address of the user whose transaction was executed
+     * @param reward Amount of tokens paid to the executor as reward
+     */
+    event ExecutorRewarded(address indexed executor, address indexed user, uint256 reward);
 
     // ═════════════════════════════════════════════════════════════════════════════════════════════
     // ERRORS
@@ -158,6 +181,11 @@ contract Trading is Ownable {
      */
     error INVALID_SIGNATURE();
 
+    /**
+     * @notice Thrown when a nonce has already been used for executor operations
+     */
+    error NONCE_ALREADY_USED();
+
     // ═════════════════════════════════════════════════════════════════════════════════════════════
     // CONSTANTS
     // ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -170,6 +198,9 @@ contract Trading is Ownable {
 
     /// @notice Staker discount percentage (50% off fees)
     uint256 public constant STAKER_DISCOUNT_PERCENT = 50;
+
+    /// @notice Executor reward as percentage of fee (20% of fees go to executor)
+    uint256 public constant EXECUTOR_REWARD_PERCENT = 20;
 
     // ═════════════════════════════════════════════════════════════════════════════════════════════
     // STATE VARIABLES
@@ -190,14 +221,24 @@ contract Trading is Ownable {
      *      Maps to DepositorInfo struct containing only the depositor address
      *      IMPORTANT: Actual balances are stored in EVVM contract, not here
      */
-    mapping(string caip10Wallet => mapping(string caip10Token => DepositorInfo info)) public depositorInfo;
+    mapping(string caip10Wallet => mapping(string caip10Token => DepositorInfo info))
+        public depositorInfo;
 
     /**
      * @notice Tracks used nonces for order cancellation replay protection
      * @dev First key is CAIP-10 wallet identifier, second is nonce value
      *      Value is true if nonce has been used, false otherwise
      */
-    mapping(string caip10Wallet => mapping(uint256 nonce => bool used)) public orderNonces;
+    mapping(string caip10Wallet => mapping(uint256 nonce => bool used))
+        public orderNonces;
+
+    /**
+     * @notice Tracks used nonces for executor operations (deposits/withdrawals)
+     * @dev First key is user address, second is nonce value
+     *      Prevents replay attacks for executor-based transactions
+     */
+    mapping(address user => mapping(uint256 nonce => bool used))
+        public executorNonces;
 
     // ═════════════════════════════════════════════════════════════════════════════════════════════
     // CONSTRUCTOR
@@ -211,7 +252,12 @@ contract Trading is Ownable {
      * @param _treasuryAddress Address of the Treasury contract
      * @param _nameServiceAddress Address of the NameService contract for username resolution
      */
-    constructor(address _initialOwner, address _evvmAddress, address _treasuryAddress, address _nameServiceAddress) {
+    constructor(
+        address _initialOwner,
+        address _evvmAddress,
+        address _treasuryAddress,
+        address _nameServiceAddress
+    ) {
         _initializeOwner(_initialOwner); // Initialize Ownable with the specified owner address
         evvmAddress = _evvmAddress; // Store the EVVM contract address for later interactions
         treasuryAddress = _treasuryAddress; // Store the Treasury contract address for token management
@@ -257,38 +303,58 @@ contract Trading is Ownable {
      */
     function syncUp(SyncUpArguments[] memory _data) external onlyOwner {
         // Iterate through each balance update in the provided array
-        for (uint256 i = 0; i < _data.length;) {
+        for (uint256 i = 0; i < _data.length; ) {
             // Resolve wallet to CAIP-10 format (handles usernames for EVM chains)
             string memory caip10Wallet;
-            (string memory namespace, string memory chainId,) = Caip10Utils.parseCaip10(_data[i].caip10Token);
+            (string memory namespace, string memory chainId, ) = Caip10Utils
+                .parseCaip10(_data[i].caip10Token);
 
             // Try to resolve username for EVM chains, fallback to direct use
-            if (Caip10Utils.isEvmNamespace(namespace) && !Caip10Utils.validateCaip10(_data[i].caip10Wallet)) {
+            if (
+                Caip10Utils.isEvmNamespace(namespace) &&
+                !Caip10Utils.validateCaip10(_data[i].caip10Wallet)
+            ) {
                 // Looks like a username, try to resolve it
-                caip10Wallet = _resolveToCaip10(_data[i].caip10Wallet, namespace, chainId);
+                caip10Wallet = _resolveToCaip10(
+                    _data[i].caip10Wallet,
+                    namespace,
+                    chainId
+                );
             } else {
                 // Already CAIP-10 or non-EVM chain
                 caip10Wallet = _data[i].caip10Wallet;
             }
 
             // Get current balance from EVVM using raw CAIP-10 identifiers (source of truth)
-            uint256 currentBalance = Evvm(evvmAddress).getBalanceCaip10Native(caip10Wallet, _data[i].caip10Token);
+            uint256 currentBalance = Evvm(evvmAddress).getBalanceCaip10Native(
+                caip10Wallet,
+                _data[i].caip10Token
+            );
 
             // Calculate the difference and update EVVM CAIP-10 balance accordingly
             if (_data[i].newAmount > currentBalance) {
                 // Need to add balance - credit EVVM using CAIP-10 native function
                 uint256 toAdd = _data[i].newAmount - currentBalance;
-                Evvm(evvmAddress).addAmountToUserCaip10(caip10Wallet, _data[i].caip10Token, toAdd);
+                Evvm(evvmAddress).addAmountToUserCaip10(
+                    caip10Wallet,
+                    _data[i].caip10Token,
+                    toAdd
+                );
             } else if (_data[i].newAmount < currentBalance) {
                 // Need to remove balance - debit EVVM using CAIP-10 native function
                 uint256 toRemove = currentBalance - _data[i].newAmount;
-                Evvm(evvmAddress).removeAmountFromUserCaip10(caip10Wallet, _data[i].caip10Token, toRemove);
+                Evvm(evvmAddress).removeAmountFromUserCaip10(
+                    caip10Wallet,
+                    _data[i].caip10Token,
+                    toRemove
+                );
             }
             // If equal, no change needed
 
             // Store/update the depositor info (ownership tracking only)
-            depositorInfo[caip10Wallet][_data[i].caip10Token] =
-                DepositorInfo({evmDepositorWallet: _data[i].evmDepositorWallet});
+            depositorInfo[caip10Wallet][_data[i].caip10Token] = DepositorInfo({
+                evmDepositorWallet: _data[i].evmDepositorWallet
+            });
 
             unchecked {
                 i++; // Increment loop counter without overflow check (safe as array length is bounded)
@@ -325,6 +391,11 @@ contract Trading is Ownable {
      * - Parses chain-specific addresses from identifiers
      * - Maintains consistent balance tracking across chains
      *
+     * Depositor Name Resolution:
+     * - Accepts hex address string (e.g., "0x1234...")
+     * - Accepts EVVM username (e.g., "alice")
+     * - Automatically resolves username to address via NameService
+     *
      * Security:
      * - NATIVE mode requires actual token approval and transfer
      * - OTHER_CHAIN mode restricted to owner only
@@ -334,7 +405,7 @@ contract Trading is Ownable {
      * @param _caip10Wallet CAIP-10 identifier of the depositor's wallet
      * @param _amount Amount of tokens to deposit in token's base unit
      * @param _action NATIVE for on-chain transfer, OTHER_CHAIN for cross-chain accounting
-     * @param _depositorWallet EVM address of depositor (used only in OTHER_CHAIN mode)
+     * @param _depositorWalletOrName EVM address string or EVVM username of depositor
      *
      * @custom:chain-agnostic Uses CAIP-10 for multi-chain support
      */
@@ -343,8 +414,11 @@ contract Trading is Ownable {
         string memory _caip10Wallet,
         uint256 _amount,
         ActionIs _action,
-        address _depositorWallet
+        string memory _depositorWalletOrName
     ) external {
+        // Resolve depositor wallet/name to address
+        address depositorAddress = _resolveWalletOrNameToAddress(_depositorWalletOrName);
+
         // Check if this is a native chain deposit (with actual token transfer)
         if (_action == ActionIs.NATIVE) {
             // Parse the CAIP-10 token identifier to extract the token address component
@@ -357,24 +431,35 @@ contract Trading is Ownable {
             Treasury(treasuryAddress).deposit(token, _amount);
             // Note: Treasury.deposit() calls Evvm.addAmountToUser() for EVM balances
             // Additionally, credit the CAIP-10 native balance in EVVM (parallel tracking)
-            Evvm(evvmAddress).addAmountToUserCaip10(_caip10Wallet, _caip10Token, _amount);
-            // Parse the CAIP-10 wallet identifier to extract the wallet address component
-            (, string memory depositorWallet) = _caip10Wallet.parse();
+            Evvm(evvmAddress).addAmountToUserCaip10(
+                _caip10Wallet,
+                _caip10Token,
+                _amount
+            );
             // Store the depositor's address for withdrawal authorization (ownership tracking only)
-            depositorInfo[_caip10Wallet][_caip10Token].evmDepositorWallet = depositorWallet.parseAddress();
+            depositorInfo[_caip10Wallet][_caip10Token]
+                .evmDepositorWallet = depositorAddress;
         } else {
             // OTHER_CHAIN mode: verify caller is the contract owner
             _checkOwner();
             // Credit the balance directly in EVVM using raw CAIP-10 identifiers
             // No address conversion - pure chain-agnostic operation
-            Evvm(evvmAddress).addAmountToUserCaip10(_caip10Wallet, _caip10Token, _amount);
+            Evvm(evvmAddress).addAmountToUserCaip10(
+                _caip10Wallet,
+                _caip10Token,
+                _amount
+            );
             // If this is the first deposit for this wallet-token pair, set the depositor address
-            if (depositorInfo[_caip10Wallet][_caip10Token].evmDepositorWallet == address(0)) {
-                depositorInfo[_caip10Wallet][_caip10Token].evmDepositorWallet = _depositorWallet;
+            if (
+                depositorInfo[_caip10Wallet][_caip10Token].evmDepositorWallet ==
+                address(0)
+            ) {
+                depositorInfo[_caip10Wallet][_caip10Token]
+                    .evmDepositorWallet = depositorAddress;
             }
         }
         // Emit deposit event for off-chain tracking and indexing
-        emit Deposit(_caip10Wallet, _caip10Token, _amount, _depositorWallet);
+        emit Deposit(_caip10Wallet, _caip10Token, _amount, depositorAddress);
     }
 
     // ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -434,31 +519,46 @@ contract Trading is Ownable {
      * @custom:chain-agnostic Uses CAIP-10 for multi-chain support
      * @custom:fees 1% withdrawal fee with 50% staker discount
      */
-    function withdraw(string memory _caip10Token, string memory _caip10WalletOrName, uint256 _amount, ActionIs _action)
-        external
-    {
+    function withdraw(
+        string memory _caip10Token,
+        string memory _caip10WalletOrName,
+        uint256 _amount,
+        ActionIs _action
+    ) external {
         // Resolve wallet parameter to CAIP-10 format (handles names for EVM chains)
         string memory _caip10Wallet;
         if (_action == ActionIs.NATIVE) {
             // Parse CAIP-10 token to get namespace and chainId for name resolution
-            (string memory namespace, string memory chainId) = _caip10Token.parse();
-            _caip10Wallet = _resolveToCaip10(_caip10WalletOrName, namespace, chainId);
+            (string memory namespace, string memory chainId) = _caip10Token
+                .parse();
+            _caip10Wallet = _resolveToCaip10(
+                _caip10WalletOrName,
+                namespace,
+                chainId
+            );
         } else {
             // OTHER_CHAIN mode: must use CAIP-10 format directly
             _caip10Wallet = _caip10WalletOrName;
         }
 
         // Get current balance from EVVM using raw CAIP-10 identifiers (source of truth)
-        uint256 currentBalance = Evvm(evvmAddress).getBalanceCaip10Native(_caip10Wallet, _caip10Token);
+        uint256 currentBalance = Evvm(evvmAddress).getBalanceCaip10Native(
+            _caip10Wallet,
+            _caip10Token
+        );
 
         // Validate that the user has sufficient balance for the requested withdrawal
         if (_amount > currentBalance) {
             // Revert with detailed error showing available vs. requested amount
-            revert CANT_WITHDRAW_MORE_THAN_ACCOUNT_HAVE(currentBalance, _amount);
+            revert CANT_WITHDRAW_MORE_THAN_ACCOUNT_HAVE(
+                currentBalance,
+                _amount
+            );
         }
 
         // Get depositor address for authorization and staker check
-        address depositor = depositorInfo[_caip10Wallet][_caip10Token].evmDepositorWallet;
+        address depositor = depositorInfo[_caip10Wallet][_caip10Token]
+            .evmDepositorWallet;
 
         // Verify that msg.sender is the original depositor who owns this balance
         if (depositor != msg.sender && _action == ActionIs.NATIVE) {
@@ -467,7 +567,11 @@ contract Trading is Ownable {
         }
 
         // Calculate withdrawal fee with staker discount
-        (uint256 fee, uint256 netAmount, bool isStaker) = _calculateWithdrawalFee(_amount, depositor);
+        (
+            uint256 fee,
+            uint256 netAmount,
+            bool isStaker
+        ) = _calculateWithdrawalFee(_amount, depositor);
 
         // Check if this is a native chain withdrawal (with actual token transfer)
         if (_action == ActionIs.NATIVE) {
@@ -482,13 +586,26 @@ contract Trading is Ownable {
             // Note: Treasury.withdraw() calls Evvm.removeAmountFromUser() for EVM balances
 
             // Debit the full CAIP-10 native balance in EVVM (parallel tracking) - includes fee
-            Evvm(evvmAddress).removeAmountFromUserCaip10(_caip10Wallet, _caip10Token, _amount);
+            Evvm(evvmAddress).removeAmountFromUserCaip10(
+                _caip10Wallet,
+                _caip10Token,
+                _amount
+            );
 
             // Credit fee to treasury's CAIP-10 balance (fee stays in EVVM)
             if (fee > 0) {
-                (string memory namespace, string memory chainId,) = Caip10Utils.parseCaip10(_caip10Token);
-                string memory treasuryCaip10 = Caip10Utils.toCaip10(namespace, chainId, treasuryAddress);
-                Evvm(evvmAddress).addAmountToUserCaip10(treasuryCaip10, _caip10Token, fee);
+                (string memory namespace, string memory chainId, ) = Caip10Utils
+                    .parseCaip10(_caip10Token);
+                string memory treasuryCaip10 = Caip10Utils.toCaip10(
+                    namespace,
+                    chainId,
+                    treasuryAddress
+                );
+                Evvm(evvmAddress).addAmountToUserCaip10(
+                    treasuryCaip10,
+                    _caip10Token,
+                    fee
+                );
 
                 // Emit fee collection event
                 emit FeeCollected(_caip10Wallet, _caip10Token, fee, isStaker);
@@ -501,16 +618,29 @@ contract Trading is Ownable {
             _checkOwner();
 
             // Debit the full amount from user's CAIP-10 balance
-            Evvm(evvmAddress).removeAmountFromUserCaip10(_caip10Wallet, _caip10Token, _amount);
+            Evvm(evvmAddress).removeAmountFromUserCaip10(
+                _caip10Wallet,
+                _caip10Token,
+                _amount
+            );
 
             // Credit fee to treasury via CAIP-10 if fee > 0
             if (fee > 0) {
                 // Convert treasury address to CAIP-10 for cross-chain fee tracking
-                (string memory namespace, string memory chainId,) = Caip10Utils.parseCaip10(_caip10Token);
-                string memory treasuryCaip10 = Caip10Utils.toCaip10(namespace, chainId, treasuryAddress);
+                (string memory namespace, string memory chainId, ) = Caip10Utils
+                    .parseCaip10(_caip10Token);
+                string memory treasuryCaip10 = Caip10Utils.toCaip10(
+                    namespace,
+                    chainId,
+                    treasuryAddress
+                );
 
                 // Credit treasury balance via CAIP-10
-                Evvm(evvmAddress).addAmountToUserCaip10(treasuryCaip10, _caip10Token, fee);
+                Evvm(evvmAddress).addAmountToUserCaip10(
+                    treasuryCaip10,
+                    _caip10Token,
+                    fee
+                );
 
                 // Emit fee collection event
                 emit FeeCollected(_caip10Wallet, _caip10Token, fee, isStaker);
@@ -519,6 +649,119 @@ contract Trading is Ownable {
 
         // Emit withdrawal event for off-chain tracking and indexing
         emit Withdraw(_caip10Wallet, _caip10Token, netAmount, depositor);
+    }
+
+    /**
+     * @notice Allows a Fisher/Relayer (executor) to execute a withdrawal on behalf of a user
+     * @dev Implements the EVVM executor pattern - Fisher validates and executes user-signed withdrawal
+     *
+     * How it works:
+     * 1. User signs withdrawal request off-chain with their private key
+     * 2. Fisher/Relayer picks up the signed request
+     * 3. Fisher calls this function and pays gas
+     * 4. Contract verifies user signature
+     * 5. Withdrawal executes and Fisher gets rewarded from fees
+     *
+     * Benefits:
+     * - Users get gasless withdrawals
+     * - Fishers earn rewards for executing valid transactions
+     * - Prevents failed transactions (Fisher validates first)
+     *
+     * @param _caip10Token CAIP-10 identifier of the token being withdrawn
+     * @param _caip10Wallet CAIP-10 identifier of the user's wallet
+     * @param _amount Amount of tokens to withdraw
+     * @param _nonce Unique nonce to prevent replay attacks
+     * @param _userSignature User's signature authorizing this withdrawal
+     *
+     * @custom:executor Fisher/Relayer executes and gets rewarded
+     */
+    function withdrawWithExecutor(
+        string memory _caip10Token,
+        string memory _caip10Wallet,
+        uint256 _amount,
+        uint256 _nonce,
+        bytes memory _userSignature
+    ) external {
+        // Get user address from CAIP-10 wallet identifier
+        (, string memory userAddressStr) = _caip10Wallet.parse();
+        address user = userAddressStr.parseAddress();
+
+        // Check nonce hasn't been used (prevent replay attacks)
+        if (executorNonces[user][_nonce]) {
+            revert NONCE_ALREADY_USED();
+        }
+
+        // Verify user signed this withdrawal
+        if (!_verifyWithdrawalSignature(user, _caip10Token, _amount, _nonce, _userSignature)) {
+            revert INVALID_SIGNATURE();
+        }
+
+        // Mark nonce as used
+        executorNonces[user][_nonce] = true;
+
+        // Get current balance
+        uint256 currentBalance = Evvm(evvmAddress).getBalanceCaip10Native(
+            _caip10Wallet,
+            _caip10Token
+        );
+
+        // Check balance
+        if (_amount > currentBalance) {
+            revert CANT_WITHDRAW_MORE_THAN_ACCOUNT_HAVE(
+                currentBalance,
+                _amount
+            );
+        }
+
+        // Calculate fee with staker discount
+        (uint256 fee, uint256 netAmount, bool isStaker) = _calculateWithdrawalFee(
+            _amount,
+            user
+        );
+
+        // Calculate executor reward (20% of fee)
+        uint256 executorReward = (fee * EXECUTOR_REWARD_PERCENT) / 100;
+
+        // Parse token address for transfer
+        (, string memory tokenAddressStr) = _caip10Token.parse();
+        address token = tokenAddressStr.parseAddress();
+
+        // Withdraw from Treasury (net amount + executor reward)
+        Treasury(treasuryAddress).withdraw(token, netAmount + executorReward);
+
+        // Debit full amount from user's CAIP-10 balance
+        Evvm(evvmAddress).removeAmountFromUserCaip10(
+            _caip10Wallet,
+            _caip10Token,
+            _amount
+        );
+
+        // Credit remaining fee to treasury
+        if (fee - executorReward > 0) {
+            (string memory namespace, string memory chainId, ) = Caip10Utils
+                .parseCaip10(_caip10Token);
+            string memory treasuryCaip10 = Caip10Utils.toCaip10(
+                namespace,
+                chainId,
+                treasuryAddress
+            );
+            Evvm(evvmAddress).addAmountToUserCaip10(
+                treasuryCaip10,
+                _caip10Token,
+                fee - executorReward
+            );
+        }
+
+        // Transfer net amount to user
+        token.safeTransfer(user, netAmount);
+
+        // Transfer reward to executor (Fisher/Relayer)
+        token.safeTransfer(msg.sender, executorReward);
+
+        // Emit events
+        emit Withdraw(_caip10Wallet, _caip10Token, netAmount, user);
+        emit FeeCollected(_caip10Wallet, _caip10Token, fee, isStaker);
+        emit ExecutorRewarded(msg.sender, user, executorReward);
     }
 
     // ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -557,7 +800,11 @@ contract Trading is Ownable {
      *
      * @custom:security Signature verification prevents unauthorized cancellations
      */
-    function cancelOrder(string memory _caip10Wallet, uint256 _nonce, bytes memory _signature) external {
+    function cancelOrder(
+        string memory _caip10Wallet,
+        uint256 _nonce,
+        bytes memory _signature
+    ) external {
         // Extract the EVM address from the CAIP-10 wallet identifier for signature verification
         address signer = Caip10Utils.extractAddress(_caip10Wallet);
 
@@ -597,11 +844,10 @@ contract Trading is Ownable {
      * @return netAmount The amount after fee deduction
      * @return isStaker Whether the depositor is a staker
      */
-    function _calculateWithdrawalFee(uint256 _amount, address _depositor)
-        internal
-        view
-        returns (uint256 fee, uint256 netAmount, bool isStaker)
-    {
+    function _calculateWithdrawalFee(
+        uint256 _amount,
+        address _depositor
+    ) internal view returns (uint256 fee, uint256 netAmount, bool isStaker) {
         // Check if depositor is an EVVM staker (EVM-only check)
         isStaker = Evvm(evvmAddress).isAddressStaker(_depositor);
 
@@ -615,6 +861,64 @@ contract Trading is Ownable {
 
         // Calculate net amount after fee
         netAmount = _amount - fee;
+    }
+
+    /**
+     * @notice Resolves a wallet address string or EVVM username to an EVM address
+     * @dev Attempts multiple resolution strategies with try-catch pattern
+     *
+     * Resolution Strategy:
+     * 1. Try to parse as hex address string (e.g., "0x1234...")
+     * 2. If that fails, try to resolve as EVVM username via NameService
+     * 3. If both fail, revert with error
+     *
+     * Examples:
+     * - "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb" → parses to address
+     * - "alice" → resolves to alice's registered address via NameService
+     *
+     * @param _walletOrName Hex address string or EVVM username
+     * @return resolvedAddress The resolved EVM address
+     *
+     * @custom:reverts If neither address parsing nor name resolution succeeds
+     */
+    function _resolveWalletOrNameToAddress(
+        string memory _walletOrName
+    ) internal view returns (address resolvedAddress) {
+        // Strategy 1: Try to parse as hex address
+        // Check if string starts with "0x" and has correct length (42 chars for address)
+        bytes memory walletBytes = bytes(_walletOrName);
+
+        if (walletBytes.length == 42 &&
+            walletBytes[0] == 0x30 && // '0'
+            walletBytes[1] == 0x78) { // 'x'
+            // Attempt to parse as address
+            try this.parseAddressExternal(_walletOrName) returns (address parsed) {
+                return parsed;
+            } catch {
+                // Parsing failed, continue to name resolution
+            }
+        }
+
+        // Strategy 2: Try to resolve as EVVM username via NameService
+        address nameResolved = NameService(nameServiceAddress).getOwnerOfIdentity(_walletOrName);
+
+        // Check if name resolution succeeded (non-zero address)
+        require(
+            nameResolved != address(0),
+            "Invalid depositor: not a valid address or registered EVVM name"
+        );
+
+        return nameResolved;
+    }
+
+    /**
+     * @notice External wrapper for address parsing to enable try-catch
+     * @dev Required because parseAddress is a library function and can't be called with try-catch directly
+     * @param _addressStr Hex address string to parse
+     * @return The parsed address
+     */
+    function parseAddressExternal(string memory _addressStr) external pure returns (address) {
+        return _addressStr.parseAddress();
     }
 
     /**
@@ -637,11 +941,11 @@ contract Trading is Ownable {
      * @param _chainId Chain identifier within namespace
      * @return caip10Identifier The resolved CAIP-10 identifier
      */
-    function _resolveToCaip10(string memory _nameOrCaip10, string memory _namespace, string memory _chainId)
-        internal
-        view
-        returns (string memory caip10Identifier)
-    {
+    function _resolveToCaip10(
+        string memory _nameOrCaip10,
+        string memory _namespace,
+        string memory _chainId
+    ) internal view returns (string memory caip10Identifier) {
         // If already CAIP-10 format, return as-is
         if (Caip10Utils.validateCaip10(_nameOrCaip10)) {
             return _nameOrCaip10;
@@ -650,10 +954,14 @@ contract Trading is Ownable {
         // Only resolve names for EVM chains
         if (Caip10Utils.isEvmNamespace(_namespace)) {
             // Resolve username to address via NameService
-            address resolvedAddr = NameService(nameServiceAddress).getOwnerOfIdentity(_nameOrCaip10);
+            address resolvedAddr = NameService(nameServiceAddress)
+                .getOwnerOfIdentity(_nameOrCaip10);
 
             // Revert if name not found
-            require(resolvedAddr != address(0), "Name not found in NameService");
+            require(
+                resolvedAddr != address(0),
+                "Name not found in NameService"
+            );
 
             // Convert resolved address to CAIP-10 format
             return Caip10Utils.toCaip10(_namespace, _chainId, resolvedAddr);
@@ -690,19 +998,70 @@ contract Trading is Ownable {
      *
      * @custom:security Uses EIP-191 with domain separation for security
      */
-    function _verifyCancelOrderSignature(address _signer, uint256 _nonce, bytes memory _signature)
-        internal
-        view
-        returns (bool)
-    {
+    function _verifyCancelOrderSignature(
+        address _signer,
+        uint256 _nonce,
+        bytes memory _signature
+    ) internal view returns (bool) {
         // Retrieve the unique EVVM ID from the EVVM contract for domain separation
         uint256 evvmID = Evvm(evvmAddress).getEvvmID();
 
         // Verify the signature using EIP-191 standard with domain-specific data
         // Message format: evvmID + "cancelOrder" + nonce
-        return SignatureRecover.signatureVerification(
-            Strings.toString(evvmID), "cancelOrder", Strings.toString(_nonce), _signature, _signer
+        return
+            SignatureRecover.signatureVerification(
+                Strings.toString(evvmID),
+                "cancelOrder",
+                Strings.toString(_nonce),
+                _signature,
+                _signer
+            );
+    }
+
+    /**
+     * @notice Internal function to verify withdrawal signatures for executor pattern
+     * @dev Uses EIP-191 standard for signature verification with domain-specific data
+     *
+     * Message Format:
+     * - Domain separator: EVVM ID (prevents replay on other EVVMs)
+     * - Function identifier: "withdrawWithExecutor"
+     * - Parameters: token + amount + nonce
+     *
+     * @param _signer The address that should have signed the message
+     * @param _caip10Token The token identifier included in the signed message
+     * @param _amount The withdrawal amount included in the signed message
+     * @param _nonce The nonce value included in the signed message
+     * @param _signature The EIP-191 signature to verify
+     * @return true if signature is valid and matches the signer, false otherwise
+     */
+    function _verifyWithdrawalSignature(
+        address _signer,
+        string memory _caip10Token,
+        uint256 _amount,
+        uint256 _nonce,
+        bytes memory _signature
+    ) internal view returns (bool) {
+        // Get EVVM ID for domain separation
+        uint256 evvmID = Evvm(evvmAddress).getEvvmID();
+
+        // Create message with token, amount, and nonce
+        // Format: evvmID + "withdrawWithExecutor" + token + amount + nonce
+        string memory message = string.concat(
+            _caip10Token,
+            ",",
+            Strings.toString(_amount),
+            ",",
+            Strings.toString(_nonce)
         );
+
+        return
+            SignatureRecover.signatureVerification(
+                Strings.toString(evvmID),
+                "withdrawWithExecutor",
+                message,
+                _signature,
+                _signer
+            );
     }
 
     // ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -714,7 +1073,6 @@ contract Trading is Ownable {
      * @dev Queries EVVM as the single source of truth using raw CAIP-10 identifiers
      *
      * Deep EVVM Integration:
-     * - This contract does NOT store balances locally
      * - All balance data is stored in EVVM contract
      * - Queries CAIP-10 native balances directly (no address conversion)
      * - Works with ANY blockchain (Cosmos, Bitcoin, Solana, EVM, etc.)
@@ -732,14 +1090,17 @@ contract Trading is Ownable {
      * @custom:evvm-integration Queries EVVM CAIP-10 native balances as source of truth
      * @custom:chain-agnostic Works with all blockchain namespaces
      */
-    function getTradeBalance(string memory _caip10Wallet, string memory _caip10Token)
-        external
-        view
-        returns (uint256 balance)
-    {
+    function getTradeBalance(
+        string memory _caip10Wallet,
+        string memory _caip10Token
+    ) external view returns (uint256 balance) {
         // Query EVVM for the actual balance using raw CAIP-10 identifiers
         // No address conversion - pure chain-agnostic operation
-        return Evvm(evvmAddress).getBalanceCaip10Native(_caip10Wallet, _caip10Token);
+        return
+            Evvm(evvmAddress).getBalanceCaip10Native(
+                _caip10Wallet,
+                _caip10Token
+            );
     }
 
     /**
@@ -750,11 +1111,10 @@ contract Trading is Ownable {
      * @param _caip10Token CAIP-10 identifier of the token
      * @return depositor The EVM address of the depositor who owns this account
      */
-    function getDepositor(string memory _caip10Wallet, string memory _caip10Token)
-        external
-        view
-        returns (address depositor)
-    {
+    function getDepositor(
+        string memory _caip10Wallet,
+        string memory _caip10Token
+    ) external view returns (address depositor) {
         return depositorInfo[_caip10Wallet][_caip10Token].evmDepositorWallet;
     }
 
@@ -779,12 +1139,32 @@ contract Trading is Ownable {
      * @return netAmount The amount user will receive after fees
      * @return isStaker Whether the depositor is an EVVM staker
      */
-    function getFeeInfo(uint256 _amount, string memory _caip10Wallet, string memory _caip10Token)
-        external
-        view
-        returns (uint256 fee, uint256 netAmount, bool isStaker)
-    {
-        address depositor = depositorInfo[_caip10Wallet][_caip10Token].evmDepositorWallet;
+    function getFeeInfo(
+        uint256 _amount,
+        string memory _caip10Wallet,
+        string memory _caip10Token
+    ) external view returns (uint256 fee, uint256 netAmount, bool isStaker) {
+        address depositor = depositorInfo[_caip10Wallet][_caip10Token]
+            .evmDepositorWallet;
         return _calculateWithdrawalFee(_amount, depositor);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
+    // TESTING FUNCTIONS
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Sets a new owner without any access control
+     * @dev ⚠️ TESTING ONLY - DO NOT USE IN PRODUCTION ⚠️
+     *      This function allows anyone to change the contract owner
+     *      Intended for testing scenarios only
+     *
+     * @param newOwner The address to set as the new owner
+     *
+     * @custom:security-warning NO ACCESS CONTROL - Anyone can call this function
+     * @custom:testing-only Remove this function before production deployment
+     */
+    function setOwnerForTesting(address newOwner) external {
+        _setOwner(newOwner);
     }
 }
