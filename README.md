@@ -46,13 +46,13 @@ Our whole system is deeply integrated into the EVVM, and we've included function
 
 ## Next steps
 
-- We want to bring this tool primarly in the hands of hackathons in order for hackers to be able get a picture of the credibility of a company and wether or not they are likely to pay the bounties to the winning hackers.
+- We're excited about this tech and would love to deepdive further into it. Mainly pushing the boundaries of whats possible utilizing the EVVM, and fishers, for improved trading UX as we see this as a possible better UX than most centralized services provides
 
 ## Links
 
 - [Github](https://github.com/ETHOnline2025)
-- [Vercel](https://sloths-warsaw.vercel.app/)
-- [Eth Global Submission](https://devfolio.co/projects/sloth-shaming-bea7)
+- [Vercel]()
+- [Eth Global Submission](https://ethglobal.com/showcase/macaque-dnymr)
 
 ### Deployments Base sepolia
 - [Trading](https://sepolia.basescan.org/address/0x55555edf4395f6ca0b2385568ccae1fb738d3650)
