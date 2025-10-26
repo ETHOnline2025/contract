@@ -55,11 +55,11 @@ Our whole system is deeply integrated into the EVVM, and we've included function
 - [Eth Global Submission](https://ethglobal.com/showcase/macaque-dnymr)
 
 ### Deployments Base sepolia
-- [Trading](https://sepolia.basescan.org/address/0x55555edf4395f6ca0b2385568ccae1fb738d3650)
-- [EVVM](https://sepolia.basescan.org/address/0xa25d6b39e757ace76840ac7a4bc6f7356de70224)
-- [Staking](https://sepolia.basescan.org/address/0xd4454caa1ac67072199e55439f7beba87aa4a4f7)
-- [NameService](https://sepolia.basescan.org/address/0x0ca5d9906e6da8d05aca2caf6ce8b8a5ed413cb2)
-- [Treasury](https://sepolia.basescan.org/address/0x2d2ebbd9863631da6f0aa87f844f37e8b96e3323)
+- [Trading](https://sepolia.basescan.org/address/0x0b4aec45bb5f3f70cc6cdb9771c850ff20d812a4)
+- [EVVM](https://sepolia.basescan.org/address/0x934df9734a2f18f68714e627d80d1b4caea9f9aa)
+- [Staking](https://sepolia.basescan.org/address/0xdc7d06ac7dcdb73bcdb79dadc20ab971d83539c3)
+- [NameService](https://sepolia.basescan.org/address/0x456773190f3b3447a4885655df6a1bfcb0c4dbfe)
+- [Treasury](https://sepolia.basescan.org/address/0xd120f54bd13c41e95b032dbd42f89c1a4f6c53bb)
 
 ## Team
 
