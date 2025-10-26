@@ -384,6 +384,8 @@ contract Trading is Ownable {
             address token = tokenAddress.parseAddress();
             // Transfer tokens from the caller to this contract using SafeTransferLib
             token.safeTransferFrom(msg.sender, address(this), _amount);
+            // Approve Treasury to spend tokens before depositing
+            token.safeApprove(treasuryAddress, _amount);
             // Forward the tokens to the Treasury contract which will update EVVM EVM balances
             Treasury(treasuryAddress).deposit(token, _amount);
             // Note: Treasury.deposit() calls Evvm.addAmountToUser() for EVM balances

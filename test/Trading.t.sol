@@ -1045,6 +1045,128 @@ contract TradingTest is Test, EvvmStructs {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
+    // TOKEN ALLOWANCE TESTS (FIX VERIFICATION)
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testDepositWithoutPreApprovalToTreasury() public {
+        // Create a fresh Trading contract without pre-approvals
+        Trading freshTrading = new Trading(owner, address(evvm), address(treasury), address(mockNameService));
+        evvm.setAuthorizedTradingContract(address(freshTrading));
+
+        // Create a fresh token
+        MockERC20 freshToken = new MockERC20();
+        string memory freshCaip10Token =
+            string(abi.encodePacked("eip155:1:", Strings.toHexString(uint160(address(freshToken)), 20)));
+
+        // Mint and approve Trading contract only (not Treasury)
+        address testUser = address(0xABC);
+        freshToken.mint(testUser, 1000 * 10 ** 18);
+        vm.prank(testUser);
+        freshToken.approve(address(freshTrading), type(uint256).max);
+
+        // This should work with our fix (Trading contract approves Treasury internally)
+        string memory testUserCaip10 = "eip155:1:0x0000000000000000000000000000000000000abc";
+        string memory testUserAddrStr = addressToString(testUser);
+
+        vm.prank(testUser);
+        freshTrading.deposit(
+            freshCaip10Token, testUserCaip10, 100 * 10 ** 18, Trading.ActionIs.NATIVE, testUserAddrStr
+        );
+
+        // Verify deposit succeeded
+        uint256 balance = evvm.getBalanceCaip10Native(testUserCaip10, freshCaip10Token);
+        assertEq(balance, 100 * 10 ** 18, "Deposit should succeed with automatic approval");
+    }
+
+    function testDepositMultipleTimesWithAutomaticApproval() public {
+        // Create fresh contracts to test approval mechanism
+        Trading freshTrading = new Trading(owner, address(evvm), address(treasury), address(mockNameService));
+        evvm.setAuthorizedTradingContract(address(freshTrading));
+
+        MockERC20 freshToken = new MockERC20();
+        string memory freshCaip10Token =
+            string(abi.encodePacked("eip155:1:", Strings.toHexString(uint160(address(freshToken)), 20)));
+
+        address testUser = address(0xDEF);
+        freshToken.mint(testUser, 10000 * 10 ** 18);
+        vm.prank(testUser);
+        freshToken.approve(address(freshTrading), type(uint256).max);
+
+        string memory testUserCaip10 = "eip155:1:0x0000000000000000000000000000000000000def";
+        string memory testUserAddrStr = addressToString(testUser);
+
+        // Multiple deposits should all work
+        vm.startPrank(testUser);
+        freshTrading.deposit(
+            freshCaip10Token, testUserCaip10, 100 * 10 ** 18, Trading.ActionIs.NATIVE, testUserAddrStr
+        );
+        freshTrading.deposit(
+            freshCaip10Token, testUserCaip10, 200 * 10 ** 18, Trading.ActionIs.NATIVE, testUserAddrStr
+        );
+        freshTrading.deposit(
+            freshCaip10Token, testUserCaip10, 300 * 10 ** 18, Trading.ActionIs.NATIVE, testUserAddrStr
+        );
+        vm.stopPrank();
+
+        // Verify all deposits succeeded
+        uint256 balance = evvm.getBalanceCaip10Native(testUserCaip10, freshCaip10Token);
+        assertEq(balance, 600 * 10 ** 18, "Multiple deposits should all succeed");
+    }
+
+    function testDepositApprovalIsExactAmount() public {
+        // Verify that Trading contract only approves the exact amount needed
+        Trading freshTrading = new Trading(owner, address(evvm), address(treasury), address(mockNameService));
+        evvm.setAuthorizedTradingContract(address(freshTrading));
+
+        MockERC20 freshToken = new MockERC20();
+        string memory freshCaip10Token =
+            string(abi.encodePacked("eip155:1:", Strings.toHexString(uint160(address(freshToken)), 20)));
+
+        address testUser = address(0x123);
+        freshToken.mint(testUser, 10000 * 10 ** 18);
+        vm.prank(testUser);
+        freshToken.approve(address(freshTrading), type(uint256).max);
+
+        string memory testUserCaip10 = "eip155:1:0x0000000000000000000000000000000000000123";
+        string memory testUserAddrStr = addressToString(testUser);
+
+        uint256 depositAmount = 100 * 10 ** 18;
+
+        vm.prank(testUser);
+        freshTrading.deposit(freshCaip10Token, testUserCaip10, depositAmount, Trading.ActionIs.NATIVE, testUserAddrStr);
+
+        // After deposit, check that Treasury has consumed the allowance
+        uint256 allowance = freshToken.allowance(address(freshTrading), address(treasury));
+        // Allowance should be 0 or very small after Treasury.deposit() consumes it
+        assertEq(allowance, 0, "Treasury should have consumed the exact approved amount");
+    }
+
+    function testFuzzDepositWithAutomaticApproval(uint128 amount) public {
+        vm.assume(amount > 0 && amount <= 5000 * 10 ** 18);
+
+        Trading freshTrading = new Trading(owner, address(evvm), address(treasury), address(mockNameService));
+        evvm.setAuthorizedTradingContract(address(freshTrading));
+
+        MockERC20 freshToken = new MockERC20();
+        string memory freshCaip10Token =
+            string(abi.encodePacked("eip155:1:", Strings.toHexString(uint160(address(freshToken)), 20)));
+
+        address testUser = address(0xFAB);
+        freshToken.mint(testUser, 10000 * 10 ** 18);
+        vm.prank(testUser);
+        freshToken.approve(address(freshTrading), type(uint256).max);
+
+        string memory testUserCaip10 = "eip155:1:0x0000000000000000000000000000000000000fab";
+        string memory testUserAddrStr = addressToString(testUser);
+
+        vm.prank(testUser);
+        freshTrading.deposit(freshCaip10Token, testUserCaip10, amount, Trading.ActionIs.NATIVE, testUserAddrStr);
+
+        uint256 balance = evvm.getBalanceCaip10Native(testUserCaip10, freshCaip10Token);
+        assertEq(balance, amount, "Deposit with any valid amount should succeed");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
     // HELPER FUNCTIONS FOR EXECUTOR TESTS
     // ═══════════════════════════════════════════════════════════════════════════════════
 
