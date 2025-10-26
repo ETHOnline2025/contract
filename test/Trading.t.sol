@@ -1045,6 +1045,247 @@ contract TradingTest is Test, EvvmStructs {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
+    // COMPLETE TOKEN FLOW INTEGRATION TESTS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    function testDepositCompleteTokenFlow() public {
+        uint256 depositAmount = 100 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+
+        // Record initial balances
+        uint256 userBalanceBefore = mockToken.balanceOf(user1);
+        uint256 tradingBalanceBefore = mockToken.balanceOf(address(trading));
+        uint256 treasuryBalanceBefore = mockToken.balanceOf(address(treasury));
+        uint256 evvmBalanceBefore = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
+
+        // Execute deposit
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // Verify token movements
+        assertEq(
+            mockToken.balanceOf(user1),
+            userBalanceBefore - depositAmount,
+            "User balance should decrease by deposit amount"
+        );
+        assertEq(
+            mockToken.balanceOf(address(trading)),
+            tradingBalanceBefore,
+            "Trading contract should NOT hold tokens (pass-through)"
+        );
+        assertEq(
+            mockToken.balanceOf(address(treasury)),
+            treasuryBalanceBefore + depositAmount,
+            "Treasury should receive all deposited tokens"
+        );
+        assertEq(
+            evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token),
+            evvmBalanceBefore + depositAmount,
+            "EVVM balance should increase by deposit amount"
+        );
+    }
+
+    function testWithdrawCompleteTokenFlow() public {
+        uint256 depositAmount = 1000 * 10 ** 18;
+        uint256 withdrawAmount = 100 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+
+        // First deposit tokens
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // Record balances before withdrawal
+        uint256 userBalanceBefore = mockToken.balanceOf(user1);
+        uint256 tradingBalanceBefore = mockToken.balanceOf(address(trading));
+        uint256 treasuryBalanceBefore = mockToken.balanceOf(address(treasury));
+        uint256 evvmBalanceBefore = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
+
+        // Calculate expected fee (1% for non-staker)
+        uint256 expectedFee = (withdrawAmount * 100) / 10000;
+        uint256 expectedNetAmount = withdrawAmount - expectedFee;
+
+        // Execute withdrawal
+        vm.prank(user1);
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, Trading.ActionIs.NATIVE);
+
+        // Verify token movements
+        assertEq(
+            mockToken.balanceOf(user1),
+            userBalanceBefore + expectedNetAmount,
+            "User should receive net amount after fee"
+        );
+        assertEq(mockToken.balanceOf(address(trading)), tradingBalanceBefore, "Trading contract should NOT hold tokens");
+        assertEq(
+            mockToken.balanceOf(address(treasury)),
+            treasuryBalanceBefore - expectedNetAmount,
+            "Treasury should release net amount to user"
+        );
+        assertEq(
+            evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token),
+            evvmBalanceBefore - withdrawAmount,
+            "EVVM balance should decrease by full withdrawal amount (including fee)"
+        );
+    }
+
+    function testDepositWithdrawRoundTrip() public {
+        uint256 depositAmount = 500 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+
+        // Record initial state
+        uint256 userInitialBalance = mockToken.balanceOf(user1);
+        uint256 treasuryInitialBalance = mockToken.balanceOf(address(treasury));
+
+        // DEPOSIT
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // Verify after deposit
+        assertEq(mockToken.balanceOf(user1), userInitialBalance - depositAmount, "User paid deposit");
+        assertEq(
+            mockToken.balanceOf(address(treasury)), treasuryInitialBalance + depositAmount, "Treasury received deposit"
+        );
+        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), depositAmount, "EVVM tracks deposit");
+
+        // WITHDRAW ALL
+        uint256 fee = (depositAmount * 100) / 10000;
+        uint256 netAmount = depositAmount - fee;
+
+        vm.prank(user1);
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE);
+
+        // Verify after withdrawal
+        assertEq(
+            mockToken.balanceOf(user1), userInitialBalance - fee, "User gets back deposit minus fee (net loss = fee)"
+        );
+        assertEq(
+            mockToken.balanceOf(address(treasury)),
+            treasuryInitialBalance + fee,
+            "Treasury keeps the fee (net gain = fee)"
+        );
+        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), 0, "EVVM balance should be zero");
+    }
+
+    function testMultipleUsersTokenIsolation() public {
+        uint256 user1Deposit = 200 * 10 ** 18;
+        uint256 user2Deposit = 300 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+        string memory user2AddrStr = addressToString(user2);
+
+        uint256 user1InitialBalance = mockToken.balanceOf(user1);
+        uint256 user2InitialBalance = mockToken.balanceOf(user2);
+        uint256 treasuryInitialBalance = mockToken.balanceOf(address(treasury));
+
+        // User1 deposits
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, user1Deposit, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // User2 deposits
+        vm.prank(user2);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER2, user2Deposit, Trading.ActionIs.NATIVE, user2AddrStr);
+
+        // Verify both users' tokens went to treasury
+        assertEq(mockToken.balanceOf(user1), user1InitialBalance - user1Deposit, "User1 paid deposit");
+        assertEq(mockToken.balanceOf(user2), user2InitialBalance - user2Deposit, "User2 paid deposit");
+        assertEq(
+            mockToken.balanceOf(address(treasury)),
+            treasuryInitialBalance + user1Deposit + user2Deposit,
+            "Treasury received both deposits"
+        );
+
+        // User1 withdraws their deposit
+        uint256 user1Fee = (user1Deposit * 100) / 10000;
+        uint256 user1Net = user1Deposit - user1Fee;
+
+        vm.prank(user1);
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, user1Deposit, Trading.ActionIs.NATIVE);
+
+        // Verify user1 got their tokens back (minus fee) and user2's deposit is untouched
+        assertEq(mockToken.balanceOf(user1), user1InitialBalance - user1Fee, "User1 got back deposit minus fee");
+        assertEq(mockToken.balanceOf(user2), user2InitialBalance - user2Deposit, "User2 balance unchanged");
+        assertEq(
+            mockToken.balanceOf(address(treasury)),
+            treasuryInitialBalance + user1Fee + user2Deposit,
+            "Treasury holds user2's deposit + user1's fee"
+        );
+    }
+
+    function testWithdrawExecutorCompleteTokenFlow() public {
+        uint256 depositAmount = 1000 * 10 ** 18;
+        uint256 withdrawAmount = 200 * 10 ** 18;
+        string memory user1AddrStr = addressToString(user1);
+        address fisher = address(0x777);
+
+        // Deposit tokens
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, depositAmount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        // Record balances before withdrawal
+        uint256 userBalanceBefore = mockToken.balanceOf(user1);
+        uint256 fisherBalanceBefore = mockToken.balanceOf(fisher);
+        uint256 treasuryBalanceBefore = mockToken.balanceOf(address(treasury));
+        uint256 evvmBalanceBefore = evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token);
+
+        // Calculate expected distributions
+        uint256 baseFee = (withdrawAmount * 100) / 10000; // 1%
+        uint256 executorReward = (baseFee * 20) / 100; // 20% of fee
+        uint256 treasuryFee = baseFee - executorReward; // 80% of fee
+        uint256 netToUser = withdrawAmount - baseFee;
+
+        // Create signature and execute via fisher
+        uint256 nonce = 1;
+        bytes memory signature = createWithdrawalSignature(user1PrivateKey, caip10Token, withdrawAmount, nonce);
+
+        vm.prank(fisher);
+        trading.withdrawWithExecutor(caip10Token, CAIP10_WALLET_USER1, withdrawAmount, nonce, signature);
+
+        // Verify token distributions
+        assertEq(mockToken.balanceOf(user1), userBalanceBefore + netToUser, "User receives net amount");
+        assertEq(mockToken.balanceOf(fisher), fisherBalanceBefore + executorReward, "Fisher receives 20% of fee");
+        assertEq(
+            mockToken.balanceOf(address(treasury)),
+            treasuryBalanceBefore - netToUser - executorReward,
+            "Treasury releases net amount + executor reward"
+        );
+        assertEq(
+            evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token),
+            evvmBalanceBefore - withdrawAmount,
+            "EVVM balance decreases by full amount"
+        );
+
+        // Verify fee accounting in EVVM (treasury should have fee credited)
+        string memory treasuryCaip10 =
+            string(abi.encodePacked("eip155:1:", Strings.toHexString(uint160(address(treasury)), 20)));
+        uint256 treasuryEvvmBalance = evvm.getBalanceCaip10Native(treasuryCaip10, caip10Token);
+        assertEq(treasuryEvvmBalance, treasuryFee, "Treasury EVVM balance should equal fee minus executor reward");
+    }
+
+    function testFuzzCompleteDepositWithdrawFlow(uint128 amount) public {
+        vm.assume(amount >= 10000 && amount <= 5000 * 10 ** 18);
+        string memory user1AddrStr = addressToString(user1);
+
+        uint256 userInitial = mockToken.balanceOf(user1);
+        uint256 treasuryInitial = mockToken.balanceOf(address(treasury));
+
+        // Deposit
+        vm.prank(user1);
+        trading.deposit(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE, user1AddrStr);
+
+        assertEq(mockToken.balanceOf(user1), userInitial - amount, "User paid deposit");
+        assertEq(mockToken.balanceOf(address(treasury)), treasuryInitial + amount, "Treasury received deposit");
+
+        // Withdraw
+        uint256 fee = (amount * 100) / 10000;
+        uint256 net = amount - fee;
+
+        vm.prank(user1);
+        trading.withdraw(caip10Token, CAIP10_WALLET_USER1, amount, Trading.ActionIs.NATIVE);
+
+        assertEq(mockToken.balanceOf(user1), userInitial - fee, "User net loss = fee");
+        assertEq(mockToken.balanceOf(address(treasury)), treasuryInitial + fee, "Treasury net gain = fee");
+        assertEq(evvm.getBalanceCaip10Native(CAIP10_WALLET_USER1, caip10Token), 0, "EVVM balance cleared");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
     // TOKEN ALLOWANCE TESTS (FIX VERIFICATION)
     // ═══════════════════════════════════════════════════════════════════════════════════
 
@@ -1069,9 +1310,7 @@ contract TradingTest is Test, EvvmStructs {
         string memory testUserAddrStr = addressToString(testUser);
 
         vm.prank(testUser);
-        freshTrading.deposit(
-            freshCaip10Token, testUserCaip10, 100 * 10 ** 18, Trading.ActionIs.NATIVE, testUserAddrStr
-        );
+        freshTrading.deposit(freshCaip10Token, testUserCaip10, 100 * 10 ** 18, Trading.ActionIs.NATIVE, testUserAddrStr);
 
         // Verify deposit succeeded
         uint256 balance = evvm.getBalanceCaip10Native(testUserCaip10, freshCaip10Token);
@@ -1097,15 +1336,9 @@ contract TradingTest is Test, EvvmStructs {
 
         // Multiple deposits should all work
         vm.startPrank(testUser);
-        freshTrading.deposit(
-            freshCaip10Token, testUserCaip10, 100 * 10 ** 18, Trading.ActionIs.NATIVE, testUserAddrStr
-        );
-        freshTrading.deposit(
-            freshCaip10Token, testUserCaip10, 200 * 10 ** 18, Trading.ActionIs.NATIVE, testUserAddrStr
-        );
-        freshTrading.deposit(
-            freshCaip10Token, testUserCaip10, 300 * 10 ** 18, Trading.ActionIs.NATIVE, testUserAddrStr
-        );
+        freshTrading.deposit(freshCaip10Token, testUserCaip10, 100 * 10 ** 18, Trading.ActionIs.NATIVE, testUserAddrStr);
+        freshTrading.deposit(freshCaip10Token, testUserCaip10, 200 * 10 ** 18, Trading.ActionIs.NATIVE, testUserAddrStr);
+        freshTrading.deposit(freshCaip10Token, testUserCaip10, 300 * 10 ** 18, Trading.ActionIs.NATIVE, testUserAddrStr);
         vm.stopPrank();
 
         // Verify all deposits succeeded
